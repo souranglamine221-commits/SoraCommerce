@@ -1,7 +1,10 @@
-// Frontend/src/context/AuthContext.jsx
-import React, { useState, useCallback } from 'react';
-import AuthContext from './AuthContext';
-import API_URL from '../utils/api';
+/* eslint-disable no-undef */
+// Frontend/src/context/authContext.js
+import { createContext } from 'react';
+
+const AuthContext = createContext();
+
+export default AuthContext;
 
 export const AuthProvider = ({ children }) => {
   const getStoredUser = () => {
@@ -15,8 +18,7 @@ export const AuthProvider = ({ children }) => {
 
   const [user, setUser] = useState(getStoredUser);
 
-  const login = useCallback(async (userData) => {
-    // Ici tu peux ajouter un appel API si besoin, sinon on stocke juste les données reçues du login
+  const login = useCallback((userData) => {
     setUser(userData);
     localStorage.setItem('user', JSON.stringify(userData));
   }, []);
