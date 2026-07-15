@@ -2,7 +2,7 @@
 import React, { useState } from 'react';
 import { ShoppingCart, User, Search, Menu, X, LogOut } from 'lucide-react';
 import { useCart } from '../context/CartContext';
-import { useAuth } from '../context/AuthContext';
+import { useAuth } from '../context/AuthContext'; // <--- CORRECTION ICI (minuscule et sans .jsx)
 import { Link, useNavigate } from 'react-router-dom';
 
 const Navbar = () => {
@@ -44,7 +44,7 @@ const Navbar = () => {
           {/* Icônes et Menu Desktop */}
           <div className="hidden md:flex items-center space-x-6">
             <Link to="/categories" className="text-gray-700 hover:text-blue-600 font-medium">Catégories</Link>
-            <Link to="/contact" className="text-gray-700 hover:text-blue-600 font-medium">Contact</Link> {/* AJOUT ICI */}
+            <Link to="/contact" className="text-gray-700 hover:text-blue-600 font-medium">Contact</Link>
             
             {/* Panier */}
             <Link to="/cart" className="relative cursor-pointer">
@@ -89,7 +89,7 @@ const Navbar = () => {
             className="w-full pl-4 pr-4 py-2 border border-gray-300 rounded-lg"
           />
           <Link to="/categories" className="block text-gray-700 font-medium">Catégories</Link>
-          <Link to="/contact" className="block text-gray-700 font-medium">Contact</Link> {/* ET ICI AUSSI */}
+          <Link to="/contact" className="block text-gray-700 font-medium">Contact</Link>
           <Link to="/cart" className="block text-gray-700 font-medium">Panier ({totalItems})</Link>
           
           {user ? (
