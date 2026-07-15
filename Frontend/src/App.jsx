@@ -1,7 +1,7 @@
 // Frontend/src/App.jsx
 import React, { useState, useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link } from 'react-router-dom';
-import { AuthProvider } from './context/AuthContext';
+import { AuthProvider } from './context/AuthContext'; // <--- CORRECTION: authContext (minuscule)
 import { CartProvider } from './context/CartContext';
 import Navbar from './components/Navbar';
 import Footer from './components/Footer';
@@ -13,7 +13,8 @@ import AdminDashboard from './pages/AdminDashboard';
 import Login from './pages/Login';
 import Register from './pages/Register';
 import AdminRoute from './components/AdminRoute';
-import Contact from './pages/Contact'; // <--- 1. AJOUTE CETTE LIGNE ICI
+import Contact from './pages/Contact';
+import API_URL from './utils/api'; // <--- AJOUT: Import de l'URL dynamique
 
 function App() {
   const [products, setProducts] = useState([]);
@@ -22,7 +23,8 @@ function App() {
   useEffect(() => {
     const fetchProducts = async () => {
       try {
-        const response = await fetch('http://localhost:5000/api/products');
+        // <--- CORRECTION: Utilisation de API_URL au lieu de localhost
+        const response = await fetch(`${API_URL}/api/products`);
         const data = await response.json();
         setProducts(data);
       } catch (error) {
@@ -77,7 +79,7 @@ function App() {
                 <Route path="/checkout" element={<Checkout />} />
                 <Route path="/login" element={<Login />} />
                 <Route path="/register" element={<Register />} />
-                <Route path="/contact" element={<Contact />} /> {/* <--- 2. AJOUTE CETTE LIGNE ICI */}
+                <Route path="/contact" element={<Contact />} />
 
                 {/* Page Admin Protégée */}
                 <Route path="/admin" element={
