@@ -1,11 +1,10 @@
-/* eslint-disable no-undef */
-// Frontend/src/context/authContext.js
-import { createContext } from 'react';
+// Frontend/src/context/AuthContext.jsx
+import React, { createContext, useState, useContext, useCallback } from 'react';
 
+// 1. Création du contexte (une seule fois)
 const AuthContext = createContext();
 
-export default AuthContext;
-
+// 2. Le Provider (une seule fois)
 export const AuthProvider = ({ children }) => {
   const getStoredUser = () => {
     try {
@@ -33,4 +32,13 @@ export const AuthProvider = ({ children }) => {
       {children}
     </AuthContext.Provider>
   );
+};
+
+// 3. Le Hook personnalisé (une seule fois)
+export const useAuth = () => {
+  const context = useContext(AuthContext);
+  if (!context) {
+    throw new Error('useAuth doit être utilisé à l\'intérieur d\'un AuthProvider');
+  }
+  return context;
 };
