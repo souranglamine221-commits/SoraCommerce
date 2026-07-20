@@ -1,7 +1,6 @@
-// Frontend/src/App.jsx
 import React, { useState, useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link } from 'react-router-dom';
-import { AuthProvider } from './context/AuthContext'; // <--- CORRECTION: authContext (minuscule)
+import { AuthProvider } from './context/AuthContext';
 import { CartProvider } from './context/CartContext';
 import Navbar from './components/Navbar';
 import Footer from './components/Footer';
@@ -14,7 +13,7 @@ import Login from './pages/Login';
 import Register from './pages/Register';
 import AdminRoute from './components/AdminRoute';
 import Contact from './pages/Contact';
-import API_URL from './utils/api'; // <--- AJOUT: Import de l'URL dynamique
+import API_URL from './utils/api';
 
 function App() {
   const [products, setProducts] = useState([]);
@@ -22,13 +21,18 @@ function App() {
 
   useEffect(() => {
     const fetchProducts = async () => {
+      const productsUrl = `${API_URL}/api/products`;
+
       try {
-        // <--- CORRECTION: Utilisation de API_URL au lieu de localhost
-        const response = await fetch(`${API_URL}/api/products`);
+        const response = await fetch(productsUrl);
         const data = await response.json();
+
         setProducts(data);
       } catch (error) {
-        console.error("Erreur lors de la récupération des produits:", error);
+        console.error(
+          'Erreur lors de la récupération des produits:',
+          error
+        );
       } finally {
         setLoading(false);
       }
@@ -43,55 +47,91 @@ function App() {
         <CartProvider>
           <div className="min-h-screen bg-gray-50 flex flex-col">
             <Navbar />
-            
+
             <main className="flex-grow">
               <Routes>
-                {/* Page d'accueil */}
-                <Route path="/" element={
-                  <div className="max-w-7xl mx-auto px-4 py-8">
-                    <div className="mb-8">
-                      <h1 className="text-3xl font-bold text-gray-900">Nos Produits Populaires</h1>
-                      <p className="mt-2 text-gray-600">Découvrez les meilleures offres du moment.</p>
-                    </div>
+                <Route
+                  path="/"
+                  element={
+                    <div className="max-w-7xl mx-auto px-4 py-8">
+                      <div className="mb-8">
+                        <h1 className="text-3xl font-bold text-gray-900">
+                          Nos Produits Populaires
+                        </h1>
 
-                    {loading ? (
-                      <p className="text-center text-gray-500">Chargement des produits...</p>
-                    ) : (
-                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-                        {products.map((product) => (
-                          <Link key={product._id} to={`/product/${product._id}`}>
-                            <ProductCard 
-                              product={{
-                                ...product,
-                                isNew: product.is_new
-                              }} 
-                            />
-                          </Link>
-                        ))}
+                        <p className="mt-2 text-gray-600">
+                          Découvrez les meilleures offres du moment.
+                        </p>
                       </div>
-                    )}
-                  </div>
-                } />
-                
-                {/* Pages Publiques */}
-                <Route path="/product/:id" element={<ProductDetails />} />
-                <Route path="/cart" element={<Cart />} />
-                <Route path="/checkout" element={<Checkout />} />
-                <Route path="/login" element={<Login />} />
-                <Route path="/register" element={<Register />} />
-                <Route path="/contact" element={<Contact />} />
 
-                {/* Page Admin Protégée */}
-                <Route path="/admin" element={
-                  <AdminRoute>
-                    <AdminDashboard />
-                  </AdminRoute>
-                } />
+                      {loading ? (
+                        <p className="text-center text-gray-500">
+                          Chargement des produits...
+                        </p>
+                      ) : (
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+                          {products.map((product) => (
+                            <Link
+                              key={product._id}
+                              to={`/product/${product._id}`}
+                            >
+                              <ProductCard
+                                product={{
+                                  ...product,
+                                  isNew: product.is_new,
+                                }}
+                              />
+                            </Link>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  }
+                />
+
+                <Route
+                  path="/product/:id"
+                  element={<ProductDetails />}
+                />
+
+                <Route
+                  path="/cart"
+                  element={<Cart />}
+                />
+
+                <Route
+                  path="/checkout"
+                  element={<Checkout />}
+                />
+
+                <Route
+                  path="/login"
+                  element={<Login />}
+                />
+
+                <Route
+                  path="/register"
+                  element={<Register />}
+                />
+
+                <Route
+                  path="/contact"
+                  element={<Contact />}
+                />
+
+                <Route
+                  path="/admin"
+                  element={
+                    <AdminRoute>
+                      <AdminDashboard />
+                    </AdminRoute>
+                  }
+                />
               </Routes>
             </main>
 
             <Footer />
-          </div>
+              </div>
         </CartProvider>
       </AuthProvider>
     </Router>

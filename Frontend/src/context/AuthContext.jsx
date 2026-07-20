@@ -1,44 +1,52 @@
-// Frontend/src/context/AuthContext.jsx
-import React, { createContext, useState, useContext, useCallback } from 'react';
+import React, {
+  createContext,
+  useContext,
+  useState,
+} from 'react';
 
-// 1. Création du contexte (une seule fois)
-const AuthContext = createContext();
+export const AuthContext = createContext(null);
 
-// 2. Le Provider (une seule fois)
-export const AuthProvider = ({ children }) => {
-  const getStoredUser = () => {
+export function AuthProvider({ children }) {
+  const [user, setUser] = useState(() => {
     try {
       const storedUser = localStorage.getItem('user');
       return storedUser ? JSON.parse(storedUser) : null;
-    } catch {
+    } catch (error) {
+      console.error('Impossible de lire la session utilisateur :', error);
+      localStorage.removeItem('user');
       return null;
     }
-  };
+  });
 
-  const [user, setUser] = useState(getStoredUser);
-
-  const login = useCallback((userData) => {
+  const login = (userData) => {
     setUser(userData);
     localStorage.setItem('user', JSON.stringify(userData));
-  }, []);
+  };
 
-  const logout = useCallback(() => {
+  const logout = () => {
     setUser(null);
     localStorage.removeItem('user');
-  }, []);
+  };
 
-  return (
-    <AuthContext.Provider value={{ user, login, logout }}>
-      {children}
-    </AuthContext.Provider>
-  );
-};
+return (
+<AuthContext.Provider
+value={{
+user,
+login,
+logout
+}}
+>
+{children}
+</AuthContext.Provider>
+);
+}
 
-// 3. Le Hook personnalisé (une seule fois)
-export const useAuth = () => {
+export function useAuth() {
   const context = useContext(AuthContext);
+
   if (!context) {
-    throw new Error('useAuth doit être utilisé à l\'intérieur d\'un AuthProvider');
+    throw new Error('useAuth doit être utilisé dans un AuthProvider');
   }
+
   return context;
-};
+}

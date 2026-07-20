@@ -2,8 +2,8 @@
 import React, { useState } from 'react';
 import { ShoppingCart, User, Search, Menu, X, LogOut } from 'lucide-react';
 import { useCart } from '../context/CartContext';
-import { useAuth } from '../context/AuthContext'; // <--- CORRECTION ICI (minuscule et sans .jsx)
 import { Link, useNavigate } from 'react-router-dom';
+import { useAuth } from '../context/AuthContext';
 
 const Navbar = () => {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
