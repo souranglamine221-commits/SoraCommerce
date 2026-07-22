@@ -1,106 +1,66 @@
+// Backend/routes/orderRoutes.js
 const express = require('express');
 const router = express.Router();
-const User = require('../models/User');
-const jwt = require('jsonwebtoken');
-const bcrypt = require('bcryptjs');
-const { OAuth2Client } = require('google-auth-library');
+const Order = require('../models/Order');
 
-const googleClient = new OAuth2Client(
-process.env.GOOGLE_CLIENT_ID
-);
+// ✅ POST - Créer une nouvelle commande
+router.post('/', async (req, res) => {
+  try {
+    const { user, email, address, items, total } = req.body;
 
-const generateToken = (user) => {
-return jwt.sign(
-{
-id: user._id,
-role: user.role,
-},
-process.env.JWT_SECRET || 'secretkey',
-{
-expiresIn: '7d',
-}
-);
-};
+    console.log('📦 Données reçues pour la commande:', req.body); // Pour le debug
 
-router.post('/register', async (req, res) => {
-try {
-const { name, email, password } = req.body;
+    // Validation basique
+    if (!items || !Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ success: false, message: 'Le panier est vide' });
+    }
 
-```
-const userExists = await User.findOne({ email });
+    // Préparation des données pour éviter les erreurs de validation MongoDB
+    const orderData = {
+      user: user || 'Client anonyme',
+      email: email || 'client@soracommerce.sn', // Valeur par défaut si vide
+      address: address || 'Adresse non spécifiée',
+      total: total || 0,
+      status: 'pending',
+      paymentStatus: 'paid',
+      items: items.map(item => ({
+        // On s'assure d'avoir un ObjectId valide ou on ignore l'item problématique
+        productId: item.productId || item._id, 
+        name: item.name || 'Produit inconnu',
+        quantity: item.quantity || 1,
+        price: item.price || 0
+      }))
+    };
 
-if (userExists) {
-  return res.status(400).json({
-    message: 'Utilisateur déjà existant',
-  });
-}
-
-const user = await User.create({
-  name,
-  email,
-  password,
+    // Création en base de données
+    const newOrder = new Order(orderData);
+    await newOrder.save();
+    
+    console.log('✅ Commande enregistrée avec succès:', newOrder._id);
+    
+    res.status(201).json({ 
+      success: true,
+      message: 'Commande créée avec succès',
+      orderId: newOrder._id
+    });
+  } catch (error) {
+    console.error('❌ ERREUR DÉTAILLÉE BACKEND (Commande):', error);
+    res.status(500).json({ 
+      success: false,
+      message: 'Erreur serveur lors de la création de la commande',
+      error: error.message // Renvoie le détail au frontend
+    });
+  }
 });
 
-const token = generateToken(user);
-
-res.status(201).json({
-  _id: user._id,
-  name: user.name,
-  email: user.email,
-  role: user.role,
-  token,
-});
-```
-
-} catch (error) {
-console.error("Erreur d'inscription:", error);
-
-```
-res.status(500).json({
-  message: error.message,
-});
-```
-
-}
-});
-
-router.post('/login', async (req, res) => {
-try {
-const { email, password } = req.body;
-
-```
-const user = await User.findOne({ email });
-
-if (
-  user &&
-  (await bcrypt.compare(password, user.password))
-) {
-  const token = generateToken(user);
-
-  return res.json({
-    _id: user._id,
-    name: user.name,
-    email: user.email,
-    role: user.role,
-    token,
-  });
-}
-
-return res.status(401).json({
-  message: 'Email ou mot de passe incorrect',
-});
-```
-
-} catch (error) {
-console.error('Erreur de connexion:', error);
-
-```
-return res.status(500).json({
-  message: error.message,
-});
-```
-
-}
+// ✅ GET - Récupérer toutes les commandes
+router.get('/', async (req, res) => {
+  try {
+    const orders = await Order.find().sort({ createdAt: -1 });
+    res.json({ success: true, data: orders });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
 });
 
 module.exports = router;

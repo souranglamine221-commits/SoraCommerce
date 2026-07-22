@@ -1,59 +1,88 @@
-// Frontend/src/components/Footer.jsx
-import React from 'react';
-import { Mail, Phone, MessageCircle } from 'lucide-react'; // On garde seulement les icônes sûres
-import { Link } from 'react-router-dom';
+// src/components/Footer.jsx
+import { Mail, Phone, Clock, Globe } from 'lucide-react';
 
 const Footer = () => {
+  const currentYear = new Date().getFullYear();
+
   return (
-    <footer className="bg-gray-900 text-white pt-12 pb-8">
+    <footer className="bg-primary text-gray-300 pt-16 pb-8 mt-auto">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-8 mb-8">
+        
+        {/* GRILLE PRINCIPALE */}
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-12 mb-12">
           
-          {/* Section Marque */}
+          {/* COLONNE 1: MARQUE */}
           <div>
-            <h3 className="text-xl font-bold mb-4 text-blue-400">SoraCommerce</h3>
-            <p className="text-gray-400 text-sm leading-relaxed">
-              Votre destination privilégiée pour les produits tech de qualité au Sénégal. 
-              Fiabilité, rapidité et service client d'excellence.
+            <h3 className="text-2xl font-bold text-white mb-4 tracking-tight">
+              Sora<span className="text-accent">Commerce</span>
+            </h3>
+            <p className="text-gray-300 leading-relaxed mb-6 max-w-xs">
+              Votre boutique de confiance livrée dans plus de 50 pays. 
+              Nous connectons le monde à travers des produits d'exception.
             </p>
+            <div className="flex items-center text-accent bg-white/5 w-fit px-3 py-1.5 rounded-full border border-white/10">
+              <Globe size={16} className="mr-2" />
+              <span className="text-sm font-medium text-white">Livraison Internationale</span>
+            </div>
           </div>
-          
-          {/* Section Liens Rapides */}
+
+          {/* COLONNE 2: LIENS RAPIDES */}
           <div>
-            <h3 className="text-xl font-bold mb-4">Liens Rapides</h3>
-            <ul className="space-y-2 text-sm text-gray-300">
-              <li><Link to="/" className="hover:text-white transition-colors">Accueil</Link></li>
-              <li><Link to="/cart" className="hover:text-white transition-colors">Panier</Link></li>
-              <li><Link to="/contact" className="hover:text-white transition-colors">Contact</Link></li>
+            <h4 className="text-white font-bold text-lg mb-6 tracking-wide uppercase text-xs opacity-90">Liens Rapides</h4>
+            <ul className="space-y-3">
+              <li><a href="/" className="text-white hover:text-accent transition-colors duration-200">Accueil</a></li>
+              <li><a href="/categories" className="text-white hover:text-accent transition-colors duration-200">Nos Catégories</a></li>
+              <li><a href="/contact" className="text-white hover:text-accent transition-colors duration-200">Service Client</a></li>
+              <li><a href="#" className="text-white hover:text-accent transition-colors duration-200">Suivre ma commande</a></li>
             </ul>
           </div>
 
-          {/* Section Contact & Social */}
+          {/* COLONNE 3: CONTACT */}
           <div>
-            <h3 className="text-xl font-bold mb-4">Nous Contacter</h3>
-            <div className="space-y-3 text-sm">
-              <a href="mailto:souranglamine221@gmail.com" className="flex items-center text-gray-300 hover:text-white transition-colors">
-                <Mail className="h-4 w-4 mr-2" /> souranglamine221@gmail.com
-              </a>
-              <a href="tel:+221773521208" className="flex items-center text-gray-300 hover:text-white transition-colors">
-                <Phone className="h-4 w-4 mr-2" /> +221 77 352 12 08
-              </a>
-              <a href="https://wa.me/221773521208" target="_blank" rel="noreferrer" className="flex items-center text-green-400 hover:text-green-300 transition-colors font-medium">
-                <MessageCircle className="h-4 w-4 mr-2" /> WhatsApp Direct
-              </a>
-            </div>
-            
-            {/* Liens Sociaux en texte pour éviter les erreurs d'icônes */}
-            <div className="mt-6 flex space-x-4 text-sm font-bold">
-              <a href="https://linkedin.com/in/mamadou-lamine-sourang" target="_blank" rel="noreferrer" className="text-gray-400 hover:text-blue-500">
-                LinkedIn
-              </a>
+            <h4 className="text-white font-bold text-lg mb-6 tracking-wide uppercase text-xs opacity-90">Nous Contacter</h4>
+            <ul className="space-y-4">
+              <li className="flex items-start group">
+                <Mail size={18} className="text-accent mr-3 mt-1 shrink-0 group-hover:text-white transition-colors" />
+                <a href="mailto:support@soracommerce.com" className="text-white hover:text-accent transition-colors">support@soracommerce.com</a>
+              </li>
+              <li className="flex items-start group">
+                <Phone size={18} className="text-accent mr-3 mt-1 shrink-0 group-hover:text-white transition-colors" />
+                <a href="https://wa.me/221773521208" target="_blank" rel="noreferrer" className="text-white hover:text-accent transition-colors">+221 77 352 12 08</a>
+              </li>
+              <li className="flex items-start">
+                <Clock size={18} className="text-accent mr-3 mt-1 shrink-0" />
+                <span className="text-white">Lun-Ven, 9h-18h (GMT)</span>
+              </li>
+            </ul>
+          </div>
+
+          {/* COLONNE 4: PAIEMENTS */}
+          <div>
+            <h4 className="text-white font-bold text-lg mb-6 tracking-wide uppercase text-xs opacity-90">Paiements Sécurisés</h4>
+            <p className="text-sm text-gray-300 mb-4">Transactions cryptées SSL 256-bit</p>
+            <div className="flex flex-wrap gap-2">
+              {['VISA', 'MC', 'AMEX', 'PAYPAL'].map((card) => (
+                <span 
+                  key={card} 
+                  className="px-3 py-1.5 bg-white/5 rounded border border-white/10 text-xs font-bold text-white hover:bg-white/10 hover:border-white/20 transition-all cursor-default"
+                >
+                  {card}
+                </span>
+              ))}
             </div>
           </div>
         </div>
 
-        <div className="border-t border-gray-800 pt-8 text-center text-gray-500 text-xs">
-          ©️ 2026 SoraCommerce. Tous droits réservés.
+        {/* BAS DE PAGE */}
+        <div className="border-t border-white/10 pt-8 flex flex-col md:flex-row justify-between items-center text-sm text-gray-400">
+          <p>© {currentYear} SoraCommerce Global. Tous droits réservés.</p>
+          <div className="mt-4 md:mt-0 space-x-4">
+            <a href="#" className="hover:text-white transition-colors">Mentions légales</a>
+            <span className="text-gray-600">•</span>
+            <a href="#" className="hover:text-white transition-colors">Confidentialité</a>
+            <span className="text-gray-600">•</span>
+            <a href="#" className="hover:text-white transition-colors">CGV</a>
+          </div>
         </div>
       </div>
     </footer>

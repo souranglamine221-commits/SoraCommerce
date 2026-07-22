@@ -1,295 +1,164 @@
-import React, { useState, useEffect } from 'react';
+// Frontend/src/pages/AdminDashboard.jsx
+import React, { useState, useCallback, useEffect } from 'react';
 import axios from 'axios';
-import { Trash2, Plus, LogOut } from 'lucide-react';
-import { useAuth } from '../context/AuthContext';
-import { useNavigate } from 'react-router-dom';
 import API_URL from '../utils/api';
 
 const AdminDashboard = () => {
-const [products, setProducts] = useState([]);
-const [isLoading, setIsLoading] = useState(true);
-
-const [newProduct, setNewProduct] = useState({
-name: '',
-price: '',
-category: '',
-image: '',
-description: '',
-stock: ''
-});
-
-const { logout } = useAuth();
-const navigate = useNavigate();
-
-useEffect(() => {
-const loadProducts = async () => {
-try {
-const res = await axios.get(
-`${API_URL}/api/products`
-);
-
-    setProducts(res.data);
-  } catch (error) {
-    console.error(
-      'Erreur de chargement des produits :',
-      error
-    );
-  } finally {
-    setIsLoading(false);
-  }
-};
-
-loadProducts();
-
-}, []);
-
-const fetchProducts = async () => {
-try {
-const res = await axios.get(
-`${API_URL}/api/products`
-);
-
-  setProducts(res.data);
-} catch (error) {
-  console.error(
-    'Erreur de chargement des produits :',
-    error
-  );
-}
-
-};
-
-const handleAddProduct = async (e) => {
-e.preventDefault();
-
-try {
-  await axios.post(
-    `${API_URL}/api/products`,
-    newProduct
-  );
-
-  alert('Produit ajouté avec succès !');
-
-  setNewProduct({
+  const [products, setProducts] = useState([]);
+  const [formData, setFormData] = useState({
     name: '',
+    description: '',
     price: '',
     category: '',
-    image: '',
-    description: '',
-    stock: ''
+    stock: '',
+    is_new: false,
+    image: '' 
   });
+  const [imageFile, setImageFile] = useState(null);
+  const [loading, setLoading] = useState(false);
 
-  fetchProducts();
-} catch (error) {
-  console.error(
-    "Erreur lors de l'ajout :",
-    error
-  );
-
-  alert(
-    "Erreur lors de l'ajout du produit"
-  );
-}
-
-};
-
-const handleDelete = async (id) => {
-  if (
-    window.confirm(
-      'Êtes-vous sûr de vouloir supprimer ce produit ?'
-    )
-  ) {
+  // ✅ Fonction de chargement stable
+  const fetchProducts = useCallback(async () => {
     try {
-      await axios.delete(
-        `${API_URL}/api/products/${id}`
-      );
-
-      fetchProducts();
+      const res = await axios.get(`${API_URL}/products`);
+      setProducts(res.data);
     } catch (error) {
-      console.error(
-        'Erreur de suppression :',
-        error
-      );
+      console.error('Erreur récupération produits:', error);
     }
-  }
-};
+  }, []);
 
-const handleLogout = () => {
-logout();
-navigate('/login');
-};
+  // ✅ Utilisation d'un effet avec une dépendance vide pour le montage initial
+  // Note: Si le linter bloque toujours ici, c'est qu'il est configuré de manière extrêmement stricte.
+  // Dans ce cas, on peut utiliser un pattern "mount" avec useRef ou simplement ignorer l'avertissement
+  // car c'est la méthode standard pour le fetching de données.
+  useEffect(() => {
+    let isMounted = true;
+    const loadData = async () => {
+      const res = await axios.get(`${API_URL}/products`);
+      if (isMounted) setProducts(res.data);
+    };
+    loadData();
+    return () => { isMounted = false; };
+  }, []);
 
-return (
-<div className="max-w-7xl mx-auto px-4 py-8">
-<div className="flex justify-between items-center mb-8">
-<h1 className="text-3xl font-bold text-gray-900">
-Tableau de Bord Administrateur
-</h1>
+  const handleChange = (e) => {
+    const value = e.target.type === 'checkbox' ? e.target.checked : e.target.value;
+    setFormData({ ...formData, [e.target.name]: value });
+  };
 
-    <button
-      onClick={handleLogout}
-      className="flex items-center text-red-600 hover:text-red-800 font-medium"
-    >
-      <LogOut className="h-5 w-5 mr-2" />
-      Déconnexion
-    </button>
-  </div>
+  const handleFileChange = (e) => {
+    setImageFile(e.target.files[0]);
+  };
 
-  <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 mb-8">
-    <h2 className="text-xl font-bold mb-4 flex items-center">
-      <Plus className="mr-2 h-5 w-5" />
-      Ajouter un produit
-    </h2>
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setLoading(true);
 
-    <form
-      onSubmit={handleAddProduct}
-      className="grid grid-cols-1 md:grid-cols-2 gap-4"
-    >
-      <input
-        required
-        type="text"
-        placeholder="Nom"
-        className="p-3 border rounded-lg"
-        value={newProduct.name}
-        onChange={(e) =>
-          setNewProduct({
-            ...newProduct,
-            name: e.target.value
-          })
-        }
-      />
+    try {
+      const data = new FormData();
+      Object.keys(formData).forEach(key => {
+        if (key !== 'image') data.append(key, formData[key]);
+      });
+      
+      if (imageFile) {
+        data.append('image', imageFile);
+      } else if (formData.image) {
+        data.append('image', formData.image);
+      }
 
-      <input
-        required
-        type="number"
-        placeholder="Prix"
-        className="p-3 border rounded-lg"
-        value={newProduct.price}
-        onChange={(e) =>
-          setNewProduct({
-            ...newProduct,
-            price: e.target.value
-          })
-        }
-      />
+      await axios.post(`${API_URL}/products`, data, {
+        headers: { 'Content-Type': 'multipart/form-data' }
+      });
 
-      <input
-        required
-        type="text"
-        placeholder="Catégorie"
-        className="p-3 border rounded-lg"
-        value={newProduct.category}
-        onChange={(e) =>
-          setNewProduct({
-            ...newProduct,
-            category: e.target.value
-          })
-        }
-      />
+      setFormData({ name: '', description: '', price: '', category: '', stock: '', is_new: false, image: '' });
+      setImageFile(null);
+      fetchProducts();
+      alert('Produit ajouté avec succès !');
+    } catch (error) {
+      console.error('Erreur ajout produit:', error);
+      alert('Erreur lors de l\'ajout du produit');
+    } finally {
+      setLoading(false);
+    }
+  };
 
-      <input
-        required
-        type="text"
-        placeholder="URL Image"
-        className="p-3 border rounded-lg"
-        value={newProduct.image}
-        onChange={(e) =>
-          setNewProduct({
-            ...newProduct,
-            image: e.target.value
-          })
-        }
-      />
+  const handleDelete = async (id) => {
+    if (window.confirm('Êtes-vous sûr de vouloir supprimer ce produit ?')) {
+      try {
+        await axios.delete(`${API_URL}/products/${id}`);
+        fetchProducts();
+      } catch (error) {
+        console.error('Erreur suppression:', error);
+      }
+    }
+  };
 
-      <textarea
-        required
-        placeholder="Description"
-        className="p-3 border rounded-lg md:col-span-2"
-        value={newProduct.description}
-        onChange={(e) =>
-          setNewProduct({
-            ...newProduct,
-            description: e.target.value
-          })
-        }
-      />
+  return (
+    <div className="max-w-6xl mx-auto p-8">
+      <h1 className="text-3xl font-bold mb-8">Dashboard Administrateur</h1>
 
-      <input
-        required
-        type="number"
-        placeholder="Stock"
-        className="p-3 border rounded-lg"
-        value={newProduct.stock}
-        onChange={(e) =>
-          setNewProduct({
-            ...newProduct,
-            stock: e.target.value
-          })
-        }
-      />
+      <div className="bg-white p-6 rounded-xl shadow-md mb-10">
+        <h2 className="text-xl font-bold mb-4">Ajouter un nouveau produit</h2>
+        <form onSubmit={handleSubmit} className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <input name="name" placeholder="Nom du produit" value={formData.name} onChange={handleChange} className="p-2 border rounded" required />
+          <input name="price" type="number" placeholder="Prix (FCFA)" value={formData.price} onChange={handleChange} className="p-2 border rounded" required />
+          <input name="category" placeholder="Catégorie" value={formData.category} onChange={handleChange} className="p-2 border rounded" />
+          <input name="stock" type="number" placeholder="Stock" value={formData.stock} onChange={handleChange} className="p-2 border rounded" />
+          
+          <div className="md:col-span-2">
+            <textarea name="description" placeholder="Description" value={formData.description} onChange={handleChange} className="w-full p-2 border rounded" rows="3" />
+          </div>
 
-      <button
-        type="submit"
-        className="md:col-span-2 bg-green-600 text-white py-3 rounded-lg font-bold hover:bg-green-700"
-      >
-        Ajouter le produit
-      </button>
-    </form>
-  </div>
+          <div className="md:col-span-2 flex gap-4 items-center">
+            <label className="flex-1">
+              <span className="block text-sm font-medium text-gray-700 mb-1">Image (Fichier)</span>
+              <input type="file" onChange={handleFileChange} className="w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"/>
+            </label>
+            <div className="flex-1">
+              <span className="block text-sm font-medium text-gray-700 mb-1">Ou lien URL</span>
+              <input name="image" placeholder="https://..." value={formData.image} onChange={handleChange} className="w-full p-2 border rounded" />
+            </div>
+          </div>
 
-  <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
-    {isLoading ? (
-      <p className="p-6 text-center">
-        Chargement des produits...
-      </p>
-    ) : (
-      <table className="w-full text-left">
-        <thead className="bg-gray-50">
-          <tr>
-            <th className="p-4">Nom</th>
-            <th className="p-4">Prix</th>
-            <th className="p-4">Stock</th>
-            <th className="p-4">Action</th>
-          </tr>
-        </thead>
+          <div className="md:col-span-2 flex items-center gap-2">
+            <input type="checkbox" name="is_new" checked={formData.is_new} onChange={handleChange} id="is_new" />
+            <label htmlFor="is_new">Marquer comme "Nouveau"</label>
+          </div>
 
-        <tbody>
-          {products.map((product) => (
-            <tr
-              key={product._id}
-              className="border-t"
-            >
-              <td className="p-4">
-                {product.name}
-              </td>
+          <button type="submit" disabled={loading} className="md:col-span-2 bg-green-600 text-white py-3 rounded-lg font-bold hover:bg-green-700 transition disabled:bg-gray-400">
+            {loading ? 'Ajout en cours...' : 'Ajouter le produit'}
+          </button>
+        </form>
+      </div>
 
-              <td className="p-4">
-                {product.price} FCFA
-              </td>
-
-              <td className="p-4">
-                {product.stock}
-              </td>
-
-              <td className="p-4">
-                <button
-                  onClick={() =>
-                    handleDelete(product._id)
-                  }
-                  className="text-red-500 hover:text-red-700"
-                >
-                  <Trash2 className="h-5 w-5" />
-                </button>
-              </td>
+      <div className="bg-white rounded-xl shadow-md overflow-hidden">
+        <table className="w-full text-left">
+          <thead className="bg-gray-50">
+            <tr>
+              <th className="p-4">Image</th>
+              <th className="p-4">Nom</th>
+              <th className="p-4">Prix</th>
+              <th className="p-4">Stock</th>
+              <th className="p-4">Action</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
-    )}
-  </div>
-</div>
-
-);
+          </thead>
+          <tbody>
+            {products.map(product => (
+              <tr key={product._id} className="border-t">
+                <td className="p-4"><img src={product.image} alt={product.name} className="w-12 h-12 object-cover rounded" /></td>
+                <td className="p-4 font-medium">{product.name}</td>
+                <td className="p-4">{product.price} FCFA</td>
+                <td className="p-4">{product.stock}</td>
+                <td className="p-4">
+                  <button onClick={() => handleDelete(product._id)} className="text-red-600 hover:text-red-800 font-bold">Supprimer</button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
 };
 
 export default AdminDashboard;

@@ -1,39 +1,43 @@
-// Backend/models/Product.js
+// backend/models/Product.js
 const mongoose = require('mongoose');
 
 const productSchema = new mongoose.Schema({
   name: {
     type: String,
-    required: [true, 'Le nom du produit est requis'],
-    trim: true
+    required: [true, 'Le nom du produit est obligatoire'],
+    trim: true,
+    maxlength: 100
   },
   description: {
     type: String,
-    required: true
+    required: [true, 'La description est obligatoire'],
+    maxlength: 2000
   },
   price: {
     type: Number,
-    required: [true, 'Le prix est requis'],
-    min: 0
-  },
-  category: {
-    type: String,
-    required: true
+    required: [true, 'Le prix est obligatoire'],
+    min: [0, 'Le prix ne peut pas être négatif']
   },
   image: {
     type: String,
-    required: true
+    default: null // Permet d'utiliser le fallback SVG si vide
   },
-  stock: {
-    type: Number,
-    default: 0
+  category: {
+    type: String,
+    required: true,
+    enum: ['Accessoires', 'Bagages', 'Électronique', 'Vêtements', 'Maison', 'Autre']
   },
   is_new: {
     type: Boolean,
     default: false
+  },
+  stock: {
+    type: Number,
+    default: 0,
+    min: 0
   }
 }, {
-  timestamps: true // Ajoute automatiquement createdAt et updatedAt
+  timestamps: true // Ajoute createdAt et updatedAt automatiquement
 });
 
 module.exports = mongoose.model('Product', productSchema);

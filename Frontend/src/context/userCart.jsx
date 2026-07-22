@@ -1,24 +1,14 @@
 /* eslint-disable react-refresh/only-export-components */
-import React, { createContext, useState, useEffect, useContext } from 'react';
+import React, { createContext, useState, useEffect } from 'react';
 
-const CartContext = createContext();
-
-export const useCart = () => {
-  const context = useContext(CartContext);
-  if (!context) {
-    throw new Error('useCart doit être utilisé dans un CartProvider');
-  }
-  return context;
-};
+export const CartContext = createContext();
 
 export const CartProvider = ({ children }) => {
-  // ✅ Initialisation lazy (pas de useEffect pour le chargement initial)
   const [cartItems, setCartItems] = useState(() => {
     const storedCart = localStorage.getItem('cart');
     return storedCart ? JSON.parse(storedCart) : [];
   });
 
-  // Sauvegarde automatique quand cartItems change
   useEffect(() => {
     localStorage.setItem('cart', JSON.stringify(cartItems));
   }, [cartItems]);

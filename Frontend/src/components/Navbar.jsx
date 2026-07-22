@@ -1,104 +1,101 @@
-// Frontend/src/components/Navbar.jsx
-import React, { useState } from 'react';
-import { ShoppingCart, User, Search, Menu, X, LogOut } from 'lucide-react';
-import { useCart } from '../context/CartContext';
-import { Link, useNavigate } from 'react-router-dom';
-import { useAuth } from '../context/AuthContext';
+// src/components/Navbar.jsx
+import { useState } from 'react';
+import { Link, useLocation } from 'react-router-dom';
+import { Menu, X, ShoppingBag, User, MessageCircle } from 'lucide-react';
+import logo from '../assets/logo.png'; // ✅ Import du logo officiel
 
 const Navbar = () => {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
-  const { cartItems } = useCart();
-  const { user, logout } = useAuth();
-  const navigate = useNavigate();
-  
-  const totalItems = cartItems.reduce((acc, item) => acc + item.quantity, 0);
+  const location = useLocation();
 
-  const handleLogout = () => {
-    logout();
-    navigate('/');
-    setIsMenuOpen(false);
-  };
+  // Fonction utilitaire pour vérifier si un lien est actif
+  const isActive = (path) => location.pathname === path;
+
+  const navLinks = [
+    { name: 'Accueil', path: '/' },
+    { name: 'Catégories', path: '/categories' },
+    { name: 'Contact', path: '/contact' },
+  ];
 
   return (
-    <nav className="bg-white shadow-md sticky top-0 z-50">
+    <nav className="bg-white shadow-sm sticky top-0 z-50 border-b border-gray-100">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="flex justify-between items-center h-16">
+        <div className="flex justify-between h-20 items-center">
           
-          {/* Logo */}
-          <Link to="/" className="flex-shrink-0 flex items-center cursor-pointer">
-            <span className="text-2xl font-bold text-blue-600">SoraCommerce</span>
+          {/* LOGO OFFICIEL SORACOMMERCE */}
+          <Link to="/" className="flex items-center group">
+            <img 
+              src={logo} 
+              alt="SoraCommerce Global" 
+              className="h-12 w-auto object-contain group-hover:scale-105 transition-transform duration-300"
+            />
           </Link>
 
-          {/* Barre de recherche */}
-          <div className="hidden md:flex flex-1 mx-8">
-            <div className="relative w-full max-w-lg">
-              <input
-                type="text"
-                placeholder="Rechercher un produit..."
-                className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-full focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
-              <Search className="absolute left-3 top-2.5 h-5 w-5 text-gray-400" />
-            </div>
-          </div>
-
-          {/* Icônes et Menu Desktop */}
-          <div className="hidden md:flex items-center space-x-6">
-            <Link to="/categories" className="text-gray-700 hover:text-blue-600 font-medium">Catégories</Link>
-            <Link to="/contact" className="text-gray-700 hover:text-blue-600 font-medium">Contact</Link>
-            
-            {/* Panier */}
-            <Link to="/cart" className="relative cursor-pointer">
-              <ShoppingCart className="h-6 w-6 text-gray-700 hover:text-blue-600" />
-              {totalItems > 0 && (
-                <span className="absolute -top-2 -right-2 bg-red-500 text-white text-xs rounded-full h-5 w-5 flex items-center justify-center">
-                  {totalItems}
-                </span>
-              )}
-            </Link>
-
-            {/* Section Utilisateur / Déconnexion */}
-            {user ? (
-              <div className="flex items-center space-x-4">
-                <span className="text-sm font-medium text-gray-700">Bonjour, {user.name}</span>
-                <button onClick={handleLogout} className="text-gray-700 hover:text-red-600 transition-colors" title="Se déconnecter">
-                  <LogOut className="h-6 w-6" />
-                </button>
-              </div>
-            ) : (
-              <Link to="/login" className="cursor-pointer">
-                <User className="h-6 w-6 text-gray-700 hover:text-blue-600" />
+          {/* NAVIGATION BUREAU */}
+          <div className="hidden md:flex items-center space-x-8">
+            {navLinks.map((link) => (
+              <Link
+                key={link.name}
+                to={link.path}
+                className={`font-medium transition-colors ${
+                  isActive(link.path) 
+                    ? 'text-accent border-b-2 border-accent pb-1' 
+                    : 'text-gray-600 hover:text-primary'
+                }`}
+              >
+                {link.name}
               </Link>
-            )}
+            ))}
           </div>
 
-          {/* Bouton Menu Mobile */}
-          <div className="md:hidden flex items-center">
-            <button onClick={() => setIsMenuOpen(!isMenuOpen)}>
-              {isMenuOpen ? <X className="h-6 w-6" /> : <Menu className="h-6 w-6" />}
-            </button>
+          {/* ACTIONS UTILISATEUR */}
+          <div className="hidden md:flex items-center space-x-4">
+            <a 
+              href="https://wa.me/221773521208" 
+              target="_blank" 
+              rel="noreferrer"
+              className="p-2 text-green-600 hover:bg-green-50 rounded-full transition"
+              title="WhatsApp"
+            >
+              <MessageCircle size={22} />
+            </a>
+            <Link to="/profile" className="p-2 text-gray-600 hover:text-primary hover:bg-gray-50 rounded-full transition">
+              <User size={22} />
+            </Link>
+            <Link to="/cart" className="relative p-2 text-primary hover:text-accent transition">
+              <ShoppingBag size={22} />
+              {/* Badge panier dynamique (à connecter avec le contexte plus tard) */}
+              <span className="absolute -top-1 -right-1 bg-accent text-white text-[10px] w-4 h-4 flex items-center justify-center rounded-full font-bold">0</span>
+            </Link>
           </div>
+
+          {/* BOUTON MENU MOBILE */}
+          <button 
+            className="md:hidden p-2 text-gray-600"
+            onClick={() => setIsMenuOpen(!isMenuOpen)}
+          >
+            {isMenuOpen ? <X size={24} /> : <Menu size={24} />}
+          </button>
         </div>
       </div>
 
-      {/* Menu Mobile */}
+      {/* MENU MOBILE DÉROULANT */}
       {isMenuOpen && (
-        <div className="md:hidden bg-white border-t p-4 space-y-4">
-          <input
-            type="text"
-            placeholder="Rechercher..."
-            className="w-full pl-4 pr-4 py-2 border border-gray-300 rounded-lg"
-          />
-          <Link to="/categories" className="block text-gray-700 font-medium">Catégories</Link>
-          <Link to="/contact" className="block text-gray-700 font-medium">Contact</Link>
-          <Link to="/cart" className="block text-gray-700 font-medium">Panier ({totalItems})</Link>
-          
-          {user ? (
-            <button onClick={handleLogout} className="block text-left text-red-600 font-medium w-full">
-              Se déconnecter ({user.name})
-            </button>
-          ) : (
-            <Link to="/login" className="block text-gray-700 font-medium">Connexion</Link>
-          )}
+        <div className="md:hidden bg-white border-t border-gray-100 py-4 px-4 space-y-4 shadow-lg">
+          {navLinks.map((link) => (
+            <Link
+              key={link.name}
+              to={link.path}
+              className={`block font-medium ${isActive(link.path) ? 'text-accent' : 'text-gray-600'}`}
+              onClick={() => setIsMenuOpen(false)}
+            >
+              {link.name}
+            </Link>
+          ))}
+          <div className="pt-4 border-t border-gray-100 flex space-x-6">
+             <Link to="/profile" className="text-gray-600"><User size={20} /></Link>
+             <Link to="/cart" className="text-primary"><ShoppingBag size={20} /></Link>
+          </div>
         </div>
       )}
     </nav>

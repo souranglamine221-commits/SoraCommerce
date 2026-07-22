@@ -1,94 +1,123 @@
 // Frontend/src/pages/Checkout.jsx
-import React, { useState } from 'react';
-import { useCart } from '../context/CartContext';
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { CreditCard, Truck, User } from 'lucide-react';
+import axios from 'axios';
+import { useCart } from '../context/CartContext';
+import { useAuth } from '../context/AuthContext';
+import API_URL from '../utils/api';
 
 const Checkout = () => {
-  const { cartItems, clearCart } = useCart();
   const navigate = useNavigate();
-  const [formData, setFormData] = useState({
-    fullName: '',
-    email: '',
-    address: '',
-    city: '',
-    cardNumber: ''
-  });
+  const { cartItems, clearCart } = useCart();
+  const { user } = useAuth();
+  
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [error, setError] = useState(null);
+  
+  // ✅ Génération d'un ID stable pour les invités sans violer la règle de pureté
+  const [guestId] = useState(() => crypto.randomUUID ? crypto.randomUUID().slice(0, 8) : Math.floor(Math.random() * 10000).toString());
 
-  const total = cartItems.reduce((acc, item) => acc + item.price * item.quantity, 0);
+  const totalPrice = cartItems.reduce(
+    (sum, item) => sum + item.price * item.quantity,
+    0
+  );
 
-  const handleSubmit = (e) => {
-    e.preventDefault();
-    // Simulation de paiement réussi
-    alert(`Merci ${formData.fullName} ! Votre commande de ${total.toLocaleString()} FCFA a été validée.`);
-    clearCart();
-    navigate('/');
+  const handlePayment = async () => {
+    if (cartItems.length === 0) return;
+    
+    setIsProcessing(true);
+    setError(null);
+
+    try {
+      const orderData = {
+        user: user?.name || 'Client anonyme',
+        email: user?.email || `invite-${guestId}@soracommerce.sn`, 
+        address: 'Thiès, Sénégal',
+        items: cartItems.map(item => ({
+          productId: item._id,
+          name: item.name,
+          quantity: item.quantity,
+          price: item.price
+        })),
+        total: totalPrice,
+        status: 'pending',
+        paymentStatus: 'paid'
+      };
+
+      // 1. Envoi de la commande au backend
+      await axios.post(`${API_URL}/orders`, orderData);
+      
+      // 2. Notification WhatsApp
+      const message = `🛍️ Nouvelle commande SoraCommerce !\n👤 Client: ${orderData.user}\n💰 Total: ${orderData.total} FCFA\n📍 Adresse: ${orderData.address}`;
+      const whatsappUrl = `https://api.callmebot.com/whatsapp/?phone=221773521208&text=${encodeURIComponent(message)}`;
+      window.open(whatsappUrl, '_blank');
+
+      // 3. Nettoyage et redirection
+      clearCart();
+      navigate('/confirmation');
+    } catch (err) {
+      console.error('Erreur commande:', err);
+      setError(err.response?.data?.message || 'Échec du paiement. Veuillez réessayer.');
+    } finally {
+      setIsProcessing(false);
+    }
   };
 
   if (cartItems.length === 0) {
-    navigate('/cart');
-    return null;
+    return (
+      <div className="max-w-4xl mx-auto mt-20 text-center p-8">
+        <h2 className="text-2xl font-bold text-gray-700 mb-4">Votre panier est vide</h2>
+        <button 
+          onClick={() => navigate('/')}
+          className="bg-blue-600 text-white px-6 py-3 rounded-lg font-bold hover:bg-blue-700 transition"
+        >
+          Voir les produits
+        </button>
+      </div>
+    );
   }
 
   return (
-    <div className="max-w-7xl mx-auto px-4 py-8">
+    <div className="max-w-4xl mx-auto px-4 py-8">
       <h1 className="text-3xl font-bold text-gray-900 mb-8">Finaliser la commande</h1>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-12">
-        {/* Formulaire */}
-        <form onSubmit={handleSubmit} className="space-y-6">
-          <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
-            <h2 className="text-xl font-bold mb-4 flex items-center"><User className="mr-2 h-5 w-5" /> Informations personnelles</h2>
-            <div className="grid grid-cols-1 gap-4">
-              <input required type="text" placeholder="Nom complet" className="w-full p-3 border rounded-lg" 
-                onChange={e => setFormData({...formData, fullName: e.target.value})} />
-              <input required type="email" placeholder="Adresse email" className="w-full p-3 border rounded-lg" 
-                onChange={e => setFormData({...formData, email: e.target.value})} />
-            </div>
-          </div>
+      {error && (
+        <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg mb-6">
+          {error}
+        </div>
+      )}
 
-          <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
-            <h2 className="text-xl font-bold mb-4 flex items-center"><Truck className="mr-2 h-5 w-5" /> Livraison</h2>
-            <div className="grid grid-cols-1 gap-4">
-              <input required type="text" placeholder="Adresse de livraison" className="w-full p-3 border rounded-lg" 
-                onChange={e => setFormData({...formData, address: e.target.value})} />
-              <input required type="text" placeholder="Ville" className="w-full p-3 border rounded-lg" 
-                onChange={e => setFormData({...formData, city: e.target.value})} />
-            </div>
-          </div>
-
-          <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
-            <h2 className="text-xl font-bold mb-4 flex items-center"><CreditCard className="mr-2 h-5 w-5" /> Paiement</h2>
-            <input required type="text" placeholder="Numéro de carte (Simulation)" className="w-full p-3 border rounded-lg" 
-              onChange={e => setFormData({...formData, cardNumber: e.target.value})} />
-          </div>
-
-          <button type="submit" className="w-full bg-blue-600 text-white py-4 rounded-xl font-bold text-lg hover:bg-blue-700 transition-colors">
-            Payer {total.toLocaleString()} FCFA
-          </button>
-        </form>
-
-        {/* Résumé de la commande */}
-        <div className="bg-gray-50 p-6 rounded-xl h-fit">
-          <h2 className="text-xl font-bold mb-4">Votre commande</h2>
-          {cartItems.map(item => (
-            <div key={item._id} className="flex justify-between items-center mb-4 pb-4 border-b">
-              <div className="flex items-center">
-                <img src={item.image} alt={item.name} className="w-16 h-16 object-cover rounded-md mr-4" />
-                <div>
-                  <p className="font-semibold">{item.name}</p>
-                  <p className="text-sm text-gray-500">Qté: {item.quantity}</p>
-                </div>
+      <div className="bg-white p-6 rounded-xl shadow-sm border mb-6">
+        <h2 className="text-xl font-bold mb-4">Votre commande</h2>
+        {cartItems.map((item) => (
+          <div key={item._id} className="flex justify-between items-center py-3 border-b last:border-0">
+            <div className="flex items-center gap-4">
+              <img src={item.image || '/placeholder.jpg'} alt={item.name} className="w-16 h-16 object-cover rounded" />
+              <div>
+                <p className="font-medium text-gray-900">{item.name}</p>
+                <p className="text-sm text-gray-500">Qté: {item.quantity}</p>
               </div>
-              <p className="font-bold">{(item.price * item.quantity).toLocaleString()} FCFA</p>
             </div>
-          ))}
-          <div className="flex justify-between font-bold text-xl mt-6 pt-4 border-t">
-            <span>Total à payer</span>
-            <span>{total.toLocaleString()} FCFA</span>
+            <p className="font-bold text-gray-900">{(item.price * item.quantity).toLocaleString()} FCFA</p>
           </div>
+        ))}
+        <div className="flex justify-between items-center mt-6 pt-4 border-t text-xl font-bold">
+          <span>Total à payer</span>
+          <span className="text-blue-600">{totalPrice.toLocaleString()} FCFA</span>
         </div>
       </div>
+
+      <button
+        onClick={handlePayment}
+        disabled={isProcessing}
+        className="w-full bg-blue-600 text-white py-4 rounded-xl font-bold text-lg hover:bg-blue-700 transition disabled:bg-gray-400 disabled:cursor-not-allowed shadow-lg"
+      >
+        {isProcessing ? 'Traitement en cours...' : `Payer ${totalPrice.toLocaleString()} FCFA`}
+      </button>
+      
+      <p className="text-center text-gray-500 text-sm mt-4">
+        Paiement sécurisé par SoraCommerce
+      </p>
     </div>
   );
 };
