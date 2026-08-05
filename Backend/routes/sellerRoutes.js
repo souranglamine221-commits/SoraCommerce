@@ -23,7 +23,8 @@ const {
   getSellerOrderDetails,
   updateSellerOrderStatusEnhanced,
   getSellerReviews,
-  sellerReviewSummary
+  sellerReviewSummary,
+  getSellerTopProducts
 } = require('../controllers/sellerController');
 
 
@@ -43,6 +44,16 @@ router.get(
   restrictTo('seller'),
   isApprovedSeller,
   sellerReviewSummary
+);
+
+// PHASE 13.11 — Produits les plus vendus du vendeur connecté
+// Placée AVANT la route publique /:id pour éviter le shadowing
+router.get(
+  '/top-products',
+  protect,
+  restrictTo('seller'),
+  isApprovedSeller,
+  getSellerTopProducts
 );
 
 
@@ -69,7 +80,13 @@ router.get('/products', restrictTo('seller'), getSellerProducts);
 
 router.get('/orders', protect, restrictTo('seller'), isApprovedSeller, getSellerOrders);
 
-router.get('/analytics', restrictTo('seller'), getSellerAnalytics);
+router.get(
+  '/analytics',
+  protect,
+  restrictTo('seller'),
+  isApprovedSeller,
+  getSellerAnalytics
+);
 
 router.delete('/account', restrictTo('seller'), deleteSellerAccount);
 

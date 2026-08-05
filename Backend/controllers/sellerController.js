@@ -251,10 +251,15 @@ const getSellerOrders = catchAsync(async (req, res, next) => {
 
 // Obtenir les analytics du vendeur
 const getSellerAnalytics = catchAsync(async (req, res, next) => {
-  const seller = await Seller.findOne({ userId: req.user._id });
-  
-  if (!seller) {
-    throw new AppError('Profil vendeur non trouvé', 404);
+  const seller = req.seller; // ✅ Utilisation exclusive de req.seller._id
+
+  // ✅ Refuser toute tentative d'utiliser sellerId provenant de req.body, req.params ou req.query
+  if (
+    req.body?.sellerId !== undefined ||
+    req.query?.sellerId !== undefined ||
+    (req.params && req.params.sellerId !== undefined)
+  ) {
+    throw new AppError('Le sellerId fourni par le client est interdit.', 400);
   }
 
   const sellerProducts = await Product.find({ sellerId: seller._id }).select('_id');
@@ -784,7 +789,7 @@ const sellerReviewSummary = catchAsync(async (req, res, next) => {
     star5: 0
   };
 
-  res.status(200).json({
+res.status(200).json({
     success: true,
     summary: {
       averageRating: Number((stats.averageRating || 0).toFixed(2)),
@@ -797,6 +802,86 @@ const sellerReviewSummary = catchAsync(async (req, res, next) => {
         5: stats.star5 || 0
       }
     }
+  });
+});
+
+// PHASE 13.11 — Obtenir les produits les plus vendus du vendeur connecté
+const getSellerTopProducts = catchAsync(async (req, res, next) => {
+  const seller = req.seller; // ✅ Utilisation exclusive de req.seller._id
+
+  // ✅ Refuser toute tentative d'utiliser sellerId provenant de req.body, req.params ou req.query
+  if (
+    req.body?.sellerId !== undefined ||
+    req.query?.sellerId !== undefined ||
+    (req.params && req.params.sellerId !== undefined)
+  ) {
+    throw new AppError('Le sellerId fourni par le client est interdit.', 400);
+  }
+
+  // ✅ Paramètre optionnel de limite (défaut 5, max 20)
+  const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 5, 1), 20);
+
+  // ✅ Récupérer les IDs des produits du vendeur
+  const sellerProducts = await Product.find({ sellerId: seller._id }).select('_id');
+  const sellerProductIds = sellerProducts.map(p => p._id);
+  const sellerProductIdSet = new Set(sellerProductIds.map(id => id.toString()));
+
+  // ✅ Récupérer les commandes (non annulées) contenant les produits du vendeur
+  const orders = await Order.find({
+    'items.productId': { $in: sellerProductIds },
+    orderStatus: { $ne: 'cancelled' }
+  });
+
+  // ✅ Agréger les quantités vendues et revenus par produit du vendeur
+  const salesMap = new Map();
+
+  orders.forEach(order => {
+    order.items.forEach(item => {
+      if (!item.productId || !sellerProductIdSet.has(item.productId.toString())) {
+        return;
+      }
+      const prodId = item.productId.toString();
+      const current = salesMap.get(prodId) || { productId: item.productId, quantitySold: 0, revenue: 0 };
+      current.quantitySold += item.quantity;
+      current.revenue += item.price * item.quantity;
+      salesMap.set(prodId, current);
+    });
+  });
+
+  const salesList = Array.from(salesMap.values());
+
+  // ✅ Récupérer les détails des produits vendus
+  const soldProductIds = salesList.map(s => s.productId);
+  const products = await Product.find({ _id: { $in: soldProductIds } })
+    .select('name image price stock category rating numReviews');
+
+  // ✅ Construire la réponse, triée par quantité vendue décroissante
+  const productMap = new Map(products.map(p => [p._id.toString(), p]));
+  const topProducts = salesList
+    .map(sale => {
+      const product = productMap.get(sale.productId.toString());
+      if (!product) return null;
+      return {
+        productId: product._id,
+        name: product.name,
+        image: product.image || (product.images && product.images[0]) || null,
+        price: product.price,
+        stock: product.stock,
+        category: product.category,
+        rating: product.rating,
+        totalReviews: product.numReviews,
+        quantitySold: sale.quantitySold,
+        revenue: sale.revenue
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.quantitySold - a.quantitySold)
+    .slice(0, limit);
+
+  res.status(200).json({
+    success: true,
+    count: topProducts.length,
+    topProducts
   });
 });
 
@@ -818,5 +903,8 @@ module.exports = {
   updateSellerOrderStatusEnhanced,
   updateSellerProductStock,
   getSellerReviews,
-  sellerReviewSummary
+  sellerReviewSummary,
+  getSellerTopProducts
 };
+
+
