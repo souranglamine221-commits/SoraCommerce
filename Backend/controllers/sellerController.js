@@ -191,27 +191,60 @@ const getSellerProducts = catchAsync(async (req, res, next) => {
   });
 });
 
-// Obtenir les commandes du vendeur
+// PHASE 13.10 — Obtenir les commandes du vendeur connecté (uniquement ses propres produits)
 const getSellerOrders = catchAsync(async (req, res, next) => {
-  const seller = await Seller.findOne({ userId: req.user._id });
-  
-  if (!seller) {
-    throw new AppError('Profil vendeur non trouvé', 404);
+  const seller = req.seller; // ✅ Utilisation exclusive de req.seller._id
+
+  // ✅ Refuser toute tentative d'utiliser sellerId provenant de req.body, req.params ou req.query
+  if (
+    req.body?.sellerId !== undefined ||
+    req.query?.sellerId !== undefined ||
+    (req.params && req.params.sellerId !== undefined)
+  ) {
+    throw new AppError('Le sellerId fourni par le client est interdit.', 400);
   }
 
-  // Trouver les commandes contenant des produits de ce vendeur
+  // ✅ Pagination
+  const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
+  const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 20, 1), 100);
+  const skip = (page - 1) * limit;
+
+  // ✅ Filtre optionnel par statut
+  const allowedStatuses = ['pending', 'processing', 'shipped', 'delivered', 'cancelled'];
+  let statusFilter = {};
+  if (req.query.status !== undefined && req.query.status !== '') {
+    if (!allowedStatuses.includes(req.query.status)) {
+      throw new AppError(`Statut invalide. Statuts autorisés : ${allowedStatuses.join(', ')}.`, 400);
+    }
+    statusFilter = { orderStatus: req.query.status };
+  }
+
+  // ✅ Récupérer les IDs des produits du vendeur
   const sellerProducts = await Product.find({ sellerId: seller._id }).select('_id');
   const sellerProductIds = sellerProducts.map(p => p._id);
 
-  const orders = await Order.find({
+  // ✅ Construire le filtre combinant les produits du vendeur et le statut optionnel
+  const baseFilter = {
     'items.productId': { $in: sellerProductIds }
-  })
-  .populate('userId', 'name email')
-  .sort({ createdAt: -1 });
+  };
+  const filter = { ...baseFilter, ...statusFilter };
+
+  const total = await Order.countDocuments(filter);
+
+  // ✅ Tri par date décroissante + pagination
+  const orders = await Order.find(filter)
+    .populate('userId', 'name email')
+    .sort({ createdAt: -1 })
+    .skip(skip)
+    .limit(limit);
 
   res.status(200).json({
     success: true,
     count: orders.length,
+    total,
+    page,
+    limit,
+    totalPages: Math.ceil(total / limit),
     orders
   });
 });
@@ -433,29 +466,46 @@ const deleteSellerProduct = catchAsync(async (req, res, next) => {
   });
 });
 
-// Mettre à jour le statut d'une commande (vendeur)
+// PHASE 13.10 — Mettre à jour le statut d'une commande du vendeur connecté (uniquement ses propres produits)
 const updateSellerOrderStatus = catchAsync(async (req, res, next) => {
-  const seller = req.seller;
-  const { id } = req.params;
-  const { status, trackingNumber } = req.body;
+  const seller = req.seller; // ✅ Utilisation exclusive de req.seller._id
 
-  // Statuts autorisés pour le vendeur
-  const allowedStatuses = ['processing', 'shipped', 'delivered'];
-  if (!allowedStatuses.includes(status)) {
-    throw new AppError('Statut non autorisé. Utilisez : processing, shipped ou delivered.', 400);
+  // ✅ Refuser toute tentative d'utiliser sellerId provenant de req.body, req.params ou req.query
+  if (
+    req.body?.sellerId !== undefined ||
+    req.query?.sellerId !== undefined ||
+    (req.params && req.params.sellerId !== undefined)
+  ) {
+    throw new AppError('Le sellerId fourni par le client est interdit.', 400);
   }
 
-  // Récupérer les IDs des produits du vendeur
-  const sellerProducts = await Product.find({ sellerId: seller._id }).select('_id');
-  const sellerProductIdSet = new Set(sellerProducts.map(p => p._id.toString()));
+  const { orderId } = req.params;
+  const { status } = req.body;
 
-  // Vérifier que la commande existe
-  const order = await Order.findById(id);
+  // ✅ Statuts autorisés pour le vendeur
+  const allowedStatuses = ['processing', 'shipped', 'delivered'];
+
+  // ✅ statut obligatoire
+  if (status === undefined || status === null || status === '') {
+    throw new AppError('Le statut est obligatoire.', 400);
+  }
+
+  // ✅ Refuser toute valeur non autorisée
+  if (!allowedStatuses.includes(status)) {
+    throw new AppError(`Statut non autorisé. Utilisez : ${allowedStatuses.join(', ')}.`, 400);
+  }
+
+  // ✅ Vérifier que la commande existe
+  const order = await Order.findById(orderId);
   if (!order) {
     throw new AppError('Commande non trouvée.', 404);
   }
 
-  // Vérifier que la commande contient au moins un produit du vendeur
+  // ✅ Récupérer les IDs des produits du vendeur
+  const sellerProducts = await Product.find({ sellerId: seller._id }).select('_id');
+  const sellerProductIdSet = new Set(sellerProducts.map(p => p._id.toString()));
+
+  // ✅ Vérifier que la commande contient au moins un produit du vendeur
   const hasSellerProduct = order.items.some(item =>
     item.productId && sellerProductIdSet.has(item.productId.toString())
   );
@@ -464,12 +514,9 @@ const updateSellerOrderStatus = catchAsync(async (req, res, next) => {
     throw new AppError('Cette commande ne contient aucun produit de votre boutique.', 403);
   }
 
-  // Mettre à jour les champs
+  // ✅ Modifier UNIQUEMENT le statut (jamais le paiement, le prix, ni les infos client)
   order.orderStatus = status;
   order.status = status;
-  if (trackingNumber) {
-    order.trackingNumber = trackingNumber;
-  }
 
   await order.save();
 
@@ -479,8 +526,7 @@ const updateSellerOrderStatus = catchAsync(async (req, res, next) => {
     order: {
       _id: order._id,
       orderStatus: order.orderStatus,
-      status: order.status,
-      trackingNumber: order.trackingNumber
+      status: order.status
     }
   });
 });

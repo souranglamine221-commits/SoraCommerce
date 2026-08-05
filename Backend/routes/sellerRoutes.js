@@ -75,8 +75,9 @@ router.delete('/account', restrictTo('seller'), deleteSellerAccount);
 
 
 // Gestion statut commande vendeur
-router.put(
-  '/orders/:id/status',
+// PHASE 13.10 — PATCH /api/sellers/orders/:orderId/status
+router.patch(
+  '/orders/:orderId/status',
   protect,
   restrictTo('seller'),
   isApprovedSeller,
