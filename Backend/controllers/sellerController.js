@@ -885,6 +885,135 @@ const getSellerTopProducts = catchAsync(async (req, res, next) => {
   });
 });
 
+// PHASE 13.12 — Obtenir les performances du vendeur connecté
+const getSellerPerformance = catchAsync(async (req, res, next) => {
+  const seller = req.seller; // ✅ Utilisation exclusive de req.seller._id
+
+  // ✅ Refuser toute tentative d'utiliser sellerId provenant de req.body, req.params ou req.query
+  if (
+    req.body?.sellerId !== undefined ||
+    req.query?.sellerId !== undefined ||
+    (req.params && req.params.sellerId !== undefined)
+  ) {
+    throw new AppError('Le sellerId fourni par le client est interdit.', 400);
+  }
+
+  // ✅ Récupérer les IDs des produits du vendeur
+  const sellerProducts = await Product.find({ sellerId: seller._id }).select('_id');
+  const sellerProductIds = sellerProducts.map(p => p._id);
+  const sellerProductIdSet = new Set(sellerProductIds.map(id => id.toString()));
+
+  // ✅ Récupérer les commandes (non annulées) contenant les produits du vendeur
+  const orders = await Order.find({
+    'items.productId': { $in: sellerProductIds },
+    orderStatus: { $ne: 'cancelled' }
+  });
+
+  // ✅ Calcul du chiffre d'affaires total (uniquement les produits du vendeur)
+  const totalRevenue = orders.reduce((sum, order) => {
+    const sellerItems = order.items.filter(item =>
+      item.productId && sellerProductIdSet.has(item.productId.toString())
+    );
+    const sellerTotal = sellerItems.reduce((itemSum, item) => itemSum + (item.price * item.quantity), 0);
+    return sum + sellerTotal;
+  }, 0);
+
+  const totalOrders = orders.length;
+
+  // ✅ Métriques temporelles (30 derniers jours)
+  const thirtyDaysAgo = new Date();
+  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+  const recentOrders = orders.filter(o => o.createdAt >= thirtyDaysAgo);
+  const recentRevenue = recentOrders.reduce((sum, order) => {
+    const sellerItems = order.items.filter(item =>
+      item.productId && sellerProductIdSet.has(item.productId.toString())
+    );
+    const sellerTotal = sellerItems.reduce((itemSum, item) => itemSum + (item.price * item.quantity), 0);
+    return sum + sellerTotal;
+  }, 0);
+
+  // ✅ Nombre de produits en attente d'approbation
+  const pendingProducts = await Product.countDocuments({
+    sellerId: seller._id,
+    approvalStatus: 'pending'
+  });
+
+  // ✅ Nombre total de produits
+  const totalProducts = sellerProducts.length;
+
+  res.status(200).json({
+    success: true,
+    performance: {
+      revenue: {
+        total: totalRevenue,
+        last30Days: recentRevenue
+      },
+      orders: {
+        total: totalOrders,
+        last30Days: recentOrders.length
+      },
+      products: {
+        total: totalProducts,
+        pending: pendingProducts
+      },
+      averageOrderValue: totalOrders > 0 ? totalRevenue / totalOrders : 0,
+      rating: seller.rating,
+      totalReviews: seller.totalReviews
+    }
+  });
+});
+
+// PHASE 13.12 — Obtenir les statistiques d'inventaire du vendeur connecté
+const getSellerInventoryStats = catchAsync(async (req, res, next) => {
+  const seller = req.seller; // ✅ Utilisation exclusive de req.seller._id
+
+  // ✅ Refuser toute tentative d'utiliser sellerId provenant de req.body, req.params ou req.query
+  if (
+    req.body?.sellerId !== undefined ||
+    req.query?.sellerId !== undefined ||
+    (req.params && req.params.sellerId !== undefined)
+  ) {
+    throw new AppError('Le sellerId fourni par le client est interdit.', 400);
+  }
+
+  // ✅ Récupérer tous les produits du vendeur
+  const products = await Product.find({ sellerId: seller._id });
+
+  const totalProducts = products.length;
+  const inStock = products.filter(p => p.stock > 0).length;
+  const outOfStock = products.filter(p => p.stock === 0).length;
+  const lowStockThreshold = 5;
+  const lowStock = products.filter(p => p.stock > 0 && p.stock <= lowStockThreshold).length;
+
+  // ✅ Agrégation par approbation / publication
+  const approved = products.filter(p => p.approvalStatus === 'approved').length;
+  const pending = products.filter(p => p.approvalStatus === 'pending').length;
+  const rejected = products.filter(p => p.approvalStatus === 'rejected').length;
+  const published = products.filter(p => p.isPublished === true).length;
+
+  // ✅ Valeur totale du stock (prix × quantité)
+  const totalStockValue = products.reduce((sum, p) => sum + (p.price * (p.stock || 0)), 0);
+
+  res.status(200).json({
+    success: true,
+    inventory: {
+      totalProducts,
+      inStock,
+      outOfStock,
+      lowStock,
+      lowStockThreshold,
+      status: {
+        approved,
+        pending,
+        rejected,
+        published
+      },
+      totalStockValue
+    }
+  });
+});
+
 module.exports = {
   registerSeller,
   getSellerProfile,
@@ -904,7 +1033,9 @@ module.exports = {
   updateSellerProductStock,
   getSellerReviews,
   sellerReviewSummary,
-  getSellerTopProducts
+  getSellerTopProducts,
+  getSellerPerformance,
+  getSellerInventoryStats
 };
 
 

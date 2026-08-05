@@ -24,7 +24,9 @@ const {
   updateSellerOrderStatusEnhanced,
   getSellerReviews,
   sellerReviewSummary,
-  getSellerTopProducts
+  getSellerTopProducts,
+  getSellerPerformance,
+  getSellerInventoryStats
 } = require('../controllers/sellerController');
 
 
@@ -154,6 +156,25 @@ router.patch(
   restrictTo('seller'),
   isApprovedSeller,
   updateSellerOrderStatusEnhanced
+);
+
+
+// PHASE 13.12 — Performances du vendeur connecté
+router.get(
+  '/performance',
+  protect,
+  restrictTo('seller'),
+  isApprovedSeller,
+  getSellerPerformance
+);
+
+// PHASE 13.12 — Statistiques d'inventaire du vendeur connecté
+router.get(
+  '/inventory-stats',
+  protect,
+  restrictTo('seller'),
+  isApprovedSeller,
+  getSellerInventoryStats
 );
 
 
