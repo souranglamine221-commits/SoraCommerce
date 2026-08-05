@@ -37,8 +37,14 @@ function App() {
       try {
         const response = await fetch(`${API_URL}/products`);
         if (!response.ok) throw new Error(`Erreur serveur: ${response.status}`);
+
         const data = await response.json();
-        if (!ignore) setProducts(data);
+
+        // ✅ L'API renvoie un OBJET paginé : { products: [...], pagination: {...} }
+        // On extrait donc le tableau `data.products` (fallback sur [] si absent).
+        const productsList = Array.isArray(data) ? data : data.products || [];
+
+        if (!ignore) setProducts(productsList);
       } catch (error) {
         if (!ignore) console.error('❌ Erreur chargement produits:', error);
       } finally {
