@@ -80,6 +80,21 @@ const ProductCard = ({ product }) => {
           {formatPrice(product.price)}
         </p>
 
+        {/* ✅ PHASE 13.11 — Lien "Voir la boutique" (si le produit a un vendeur) */}
+        {product.sellerId?._id && (
+          <Link
+            to={`/shop/${product.sellerId._id}`}
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              window.location.href = `/shop/${product.sellerId._id}`;
+            }}
+            className="inline-block mt-2 text-xs font-medium text-[#D4AF37] hover:text-[#0F172A] hover:underline transition-colors"
+          >
+            Voir la boutique →
+          </Link>
+        )}
+
         <button
           onClick={handleAddToCart}
           className="w-full mt-4 bg-[#0F172A] text-white py-2.5 rounded-lg hover:bg-[#020617] transition font-semibold text-xs uppercase tracking-wide"

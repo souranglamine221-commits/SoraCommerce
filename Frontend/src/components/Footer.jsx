@@ -1,5 +1,6 @@
 // src/components/Footer.jsx
 import { Mail, Phone, Clock, Globe } from 'lucide-react';
+import logo from '../assets/logo.png';
 
 const Footer = () => {
   const currentYear = new Date().getFullYear();
@@ -13,9 +14,16 @@ const Footer = () => {
           
           {/* COLONNE 1: MARQUE */}
           <div>
-            <h3 className="text-2xl font-bold text-white mb-4 tracking-tight">
-              Sora<span className="text-accent">Commerce</span>
-            </h3>
+            <div className="flex items-center mb-4">
+              <img 
+                src={logo} 
+                alt="SoraCommerce Global" 
+                className="h-12 w-auto object-contain"
+              />
+              <h3 className="text-2xl font-bold text-white ml-3 tracking-tight">
+                Sora<span className="text-accent">Commerce</span>
+              </h3>
+            </div>
             <p className="text-gray-300 leading-relaxed mb-6 max-w-xs">
               Votre boutique de confiance livrée dans plus de 50 pays. 
               Nous connectons le monde à travers des produits d'exception.

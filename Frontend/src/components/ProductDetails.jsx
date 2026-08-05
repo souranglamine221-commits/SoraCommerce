@@ -4,6 +4,7 @@ import axios from 'axios';
 import { ShoppingCart, ArrowLeft, Star, ShieldCheck, Truck } from 'lucide-react';
 import { useCart } from '../context/CartContext';
 import API_URL from '../utils/api';
+import { formatPrice } from '../utils/formatPrice';
 
 const ProductDetails = () => {
   const { id } = useParams();
@@ -118,7 +119,7 @@ const ProductDetails = () => {
             {/* ✅ PRIX INTERNATIONAL (USD) */}
             <div className="flex items-center gap-4 mb-8">
               <span className="text-4xl font-bold text-blue-600">
-                ${product.price.toLocaleString()} USD
+                {formatPrice(product.price, 'USD')}
               </span>
               <span
                 className={`text-sm font-medium px-3 py-1 rounded-full ${

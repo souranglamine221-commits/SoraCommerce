@@ -3,6 +3,7 @@ import React from 'react';
 import { useCart } from '../context/CartContext';
 import { Link, useNavigate } from 'react-router-dom';
 import { Trash2, ArrowRight, ShoppingBag } from 'lucide-react';
+import { formatPrice } from '../utils/formatPrice';
 
 const Cart = () => {
   const { cartItems, removeFromCart, clearCart } = useCart();
@@ -38,7 +39,7 @@ const Cart = () => {
               <div className="ml-4 flex-1">
                 <h3 className="font-semibold text-gray-900">{item.name}</h3>
                 <p className="text-gray-500 text-sm">{item.category}</p>
-                <p className="text-blue-600 font-bold mt-1">{item.price.toLocaleString()} FCFA</p>
+<p className="text-blue-600 font-bold mt-1">{formatPrice(item.price)}</p>
               </div>
 
               <div className="flex items-center space-x-4">
@@ -66,7 +67,7 @@ const Cart = () => {
           <h2 className="text-xl font-bold mb-4">Résumé</h2>
           <div className="flex justify-between mb-2 text-gray-600">
             <span>Sous-total</span>
-            <span>{total.toLocaleString()} FCFA</span>
+<span>{formatPrice(total)}</span>
           </div>
           <div className="flex justify-between mb-4 text-gray-600">
             <span>Livraison</span>
@@ -74,7 +75,7 @@ const Cart = () => {
           </div>
           <div className="border-t pt-4 flex justify-between font-bold text-lg text-gray-900">
             <span>Total</span>
-            <span>{total.toLocaleString()} FCFA</span>
+            <span>{formatPrice(total)}</span>
           </div>
 
           <button 

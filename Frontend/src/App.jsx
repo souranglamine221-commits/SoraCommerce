@@ -1,8 +1,10 @@
 // src/App.jsx
 import { useState, useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
-import { AuthProvider } from './context/AuthContext';
+import { AuthProvider } from './context/AuthProvider'; // ✅ CORRECT
 import { CartProvider } from './context/CartContext';
+import { CurrencyProvider } from './context/CurrencyContext';
+import { LanguageProvider } from './context/LanguageContext';
 import Navbar from './components/Navbar';
 import Footer from './components/Footer';
 import ProductCard from './components/ProductCard';
@@ -14,9 +16,15 @@ import AdminDashboard from './pages/AdminDashboard';
 import Login from './pages/Login';
 import Register from './pages/Register';
 import Profile from './pages/Profile';
+import OrderHistory from './pages/OrderHistory';
+import OrderDetails from './pages/OrderDetails';
+import PaymentSuccess from './pages/PaymentSuccess';
+import PaymentCancel from './pages/PaymentCancel';
+import AccountDashboard from './pages/account/AccountDashboard';
 import AdminRoute from './components/AdminRoute';
 import Contact from './pages/Contact';
 import Categories from './pages/Categories';
+import Shop from './pages/Shop';
 import API_URL from './utils/api';
 
 function App() {
@@ -25,7 +33,6 @@ function App() {
 
   useEffect(() => {
     let ignore = false;
-
     const fetchProducts = async () => {
       try {
         const response = await fetch(`${API_URL}/products`);
@@ -38,7 +45,6 @@ function App() {
         if (!ignore) setLoading(false);
       }
     };
-
     fetchProducts();
     return () => { ignore = true; };
   }, []);
@@ -47,29 +53,23 @@ function App() {
     <Router>
       <AuthProvider>
         <CartProvider>
-          {/* ✅ Fond Blanc Cassé Premium */}
-          <div className="min-h-screen bg-gray-50 flex flex-col">
-            <Navbar />
-
-            <main className="flex-grow">
-              <Routes>
-                <Route
-                  path="/"
-                  element={
+          <CurrencyProvider>
+            <LanguageProvider>
+              <div className="min-h-screen bg-gray-50 flex flex-col">
+              <Navbar />
+              <main className="flex-grow">
+                <Routes>
+                  <Route path="/" element={
                     <div className="max-w-7xl mx-auto px-4 py-16">
                       <div className="mb-16 text-center space-y-4">
-                        {/* ✅ Titre en Bleu Nuit Profond */}
                         <h1 className="text-4xl md:text-5xl font-extrabold text-primary tracking-tight">
                           SoraCommerce <span className="text-accent">Global</span>
                         </h1>
-                        
-                        {/* ✅ Sous-titre lisible et élégant */}
                         <p className="text-lg text-gray-800 max-w-2xl mx-auto leading-relaxed font-medium">
                           Découvrez notre sélection premium livrée partout dans le monde. 
                           Qualité, fiabilité et service client exceptionnel.
                         </p>
                       </div>
-
                       {loading ? (
                         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-8 animate-pulse">
                           {[1, 2, 3].map((i) => (
@@ -77,7 +77,6 @@ function App() {
                           ))}
                         </div>
                       ) : products.length === 0 ? (
-                        /* ✅ Message vide parfaitement lisible */
                         <p className="text-center text-gray-600 py-10 font-medium">
                           Aucun produit disponible pour le moment.
                         </p>
@@ -89,35 +88,36 @@ function App() {
                         </div>
                       )}
                     </div>
-                  }
-                />
-
-                <Route path="/product/:id" element={<ProductDetails />} />
-                <Route path="/cart" element={<Cart />} />
-                <Route path="/checkout" element={<Checkout />} />
-                <Route path="/confirmation" element={<Confirmation />} />
-                <Route path="/login" element={<Login />} />
-                <Route path="/register" element={<Register />} />
-                <Route path="/contact" element={<Contact />} />
-                <Route path="/categories" element={<Categories />} />
-                <Route path="/profile" element={<Profile />} />
-
-                <Route
-                  path="/admin"
-                  element={
+                  } />
+                  <Route path="/product/:id" element={<ProductDetails />} />
+                  <Route path="/cart" element={<Cart />} />
+                  <Route path="/checkout" element={<Checkout />} />
+                  <Route path="/confirmation" element={<Confirmation />} />
+                  <Route path="/login" element={<Login />} />
+                  <Route path="/register" element={<Register />} />
+                  <Route path="/contact" element={<Contact />} />
+                  <Route path="/categories" element={<Categories />} />
+                  <Route path="/shop/:id" element={<Shop />} />
+                  <Route path="/profile" element={<Profile />} />
+                  <Route path="/account" element={<AccountDashboard />} />
+                  <Route path="/orders" element={<OrderHistory />} />
+                  <Route path="/orders/:id" element={<OrderDetails />} />
+                  <Route path="/payment/success" element={<PaymentSuccess />} />
+                  <Route path="/payment/cancel" element={<PaymentCancel />} />
+                  <Route path="/admin" element={
                     <AdminRoute>
                       <AdminDashboard />
                     </AdminRoute>
-                  }
-                />
-              </Routes>
-            </main>
-
-            <Footer />
-          </div>
-        </CartProvider>
-      </AuthProvider>
-    </Router>
+                  } />
+                </Routes>
+              </main>
+              <Footer />
+            </div>
+          </LanguageProvider>
+        </CurrencyProvider>
+      </CartProvider>
+    </AuthProvider>
+  </Router>
   );
 }
 

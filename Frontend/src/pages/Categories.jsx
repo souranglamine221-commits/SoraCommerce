@@ -31,9 +31,7 @@ const Categories = () => {
       <h1 className="text-3xl font-bold mb-6">Toutes nos Catégories</h1>
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
         {products.map((product) => (
-          <Link key={product._id} to={`/product/${product._id}`}>
-            <ProductCard product={product} />
-          </Link>
+          <ProductCard key={product._id} product={product} />
         ))}
       </div>
     </div>
