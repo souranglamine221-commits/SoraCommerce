@@ -1229,6 +1229,222 @@ const getSellerInventoryStats = catchAsync(async (req, res, next) => {
   });
 });
 
+// PHASE 13.14 — Obtenir les insights clients du vendeur connecté
+// (uniquement les clients ayant acheté les produits du vendeur)
+const getSellerCustomerInsights = catchAsync(async (req, res, next) => {
+  const seller = req.seller; // ✅ Utilisation exclusive de req.seller._id
+
+  // ✅ Refuser toute tentative d'utiliser sellerId provenant de req.body, req.params ou req.query
+  if (
+    req.body?.sellerId !== undefined ||
+    req.query?.sellerId !== undefined ||
+    (req.params && req.params.sellerId !== undefined)
+  ) {
+    throw new AppError('Le sellerId fourni par le client est interdit.', 400);
+  }
+
+  // ✅ Récupérer les IDs des produits du vendeur
+  const sellerProducts = await Product.find({ sellerId: seller._id }).select('_id');
+  const sellerProductIds = sellerProducts.map(p => p._id);
+  const sellerProductIdSet = new Set(sellerProductIds.map(id => id.toString()));
+
+  // ✅ Récupérer les commandes non annulées contenant les produits du vendeur
+  // (uniquement les champs nécessaires, tri ascendant pour calculer la première commande)
+  const orders = await Order.find({
+    'items.productId': { $in: sellerProductIds },
+    orderStatus: { $ne: 'cancelled' },
+    userId: { $ne: null }
+  })
+    .select('userId items productId quantity price createdAt')
+    .sort({ createdAt: 1 });
+
+  // ✅ Agréger les clients uniques
+  const customerMap = new Map();
+
+  orders.forEach(order => {
+    if (!order.userId) return;
+    const userId = order.userId.toString();
+
+    const sellerItems = order.items.filter(item =>
+      item.productId && sellerProductIdSet.has(item.productId.toString())
+    );
+
+    // ✅ Ignorer les commandes sans produit du vendeur
+    if (sellerItems.length === 0) return;
+
+    const orderSpent = sellerItems.reduce(
+      (sum, item) => sum + (item.price * item.quantity),
+      0
+    );
+
+    const existing = customerMap.get(userId) || {
+      userId: order.userId,
+      totalOrders: 0,
+      totalSpent: 0,
+      firstOrderDate: order.createdAt
+    };
+
+    existing.totalOrders += 1;
+    existing.totalSpent += orderSpent;
+    if (order.createdAt < existing.firstOrderDate) {
+      existing.firstOrderDate = order.createdAt;
+    }
+
+    customerMap.set(userId, existing);
+  });
+
+  const customers = Array.from(customerMap.values());
+
+  // ✅ totalCustomers : nombre total de clients uniques
+  const totalCustomers = customers.length;
+
+  // ✅ newCustomersLast30Days : clients dont la première commande date des 30 derniers jours
+  const thirtyDaysAgo = new Date();
+  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+  const newCustomersLast30Days = customers.filter(
+    c => c.firstOrderDate >= thirtyDaysAgo
+  ).length;
+
+  // ✅ returningCustomers : clients ayant effectué au moins 2 commandes
+  const returningCustomers = customers.filter(c => c.totalOrders >= 2).length;
+
+  // ✅ Top 10 clients triés par totalSpent décroissant
+  const topCustomers = [...customers]
+    .sort((a, b) => b.totalSpent - a.totalSpent)
+    .slice(0, 10);
+
+  // ✅ Récupérer name et email des clients (User uniquement)
+  const topUserIds = topCustomers.map(c => c.userId);
+  const users = await User.find({ _id: { $in: topUserIds } }).select('name email');
+  const userMap = new Map(users.map(u => [u._id.toString(), u]));
+
+  const topClients = topCustomers.map(customer => {
+    const user = userMap.get(customer.userId.toString());
+    return {
+      userId: customer.userId,
+      name: user ? user.name : 'Compte supprimé',
+      email: user ? user.email : null,
+      totalOrders: customer.totalOrders,
+      totalSpent: Number(customer.totalSpent.toFixed(2)),
+      firstOrderDate: customer.firstOrderDate
+    };
+  });
+
+  res.status(200).json({
+    success: true,
+    customerInsights: {
+      totalCustomers,
+      newCustomersLast30Days,
+      returningCustomers
+    },
+    topClients
+  });
+});
+
+// PHASE 13.14 — Obtenir les insights commandes du vendeur connecté
+const getSellerOrderInsights = catchAsync(async (req, res, next) => {
+  const seller = req.seller; // ✅ Utilisation exclusive de req.seller._id
+
+  // ✅ Refuser toute tentative d'utiliser sellerId provenant de req.body, req.params ou req.query
+  if (
+    req.body?.sellerId !== undefined ||
+    req.query?.sellerId !== undefined ||
+    (req.params && req.params.sellerId !== undefined)
+  ) {
+    throw new AppError('Le sellerId fourni par le client est interdit.', 400);
+  }
+
+  // ✅ Récupérer les IDs des produits du vendeur
+  const sellerProducts = await Product.find({ sellerId: seller._id }).select('_id');
+  const sellerProductIds = sellerProducts.map(p => p._id);
+  const sellerProductIdSet = new Set(sellerProductIds.map(id => id.toString()));
+
+  // ✅ Récupérer toutes les commandes (y compris annulées pour les stats de statuts)
+  // contenant les produits du vendeur
+  const orders = await Order.find({
+    'items.productId': { $in: sellerProductIds }
+  }).select('userId items orderStatus createdAt');
+
+  // ✅ 1) Statistiques commandes
+  const totalOrders = orders.length;
+  const completedOrders = orders.filter(o => o.orderStatus === 'delivered').length;
+  const cancelledOrders = orders.filter(o => o.orderStatus === 'cancelled').length;
+  const pendingOrders = orders.filter(o => o.orderStatus === 'pending').length;
+
+  // ✅ 2) Taux (éviter division par zéro)
+  const resolvedOrders = completedOrders + cancelledOrders;
+  let deliveryRate = 0;
+  let cancellationRate = 0;
+
+  if (resolvedOrders > 0) {
+    deliveryRate = (completedOrders / resolvedOrders) * 100;
+    cancellationRate = (cancelledOrders / resolvedOrders) * 100;
+  }
+
+  // ✅ 3) Évolution hebdomadaire (8 dernières semaines)
+  const weekLabels = ['Dim', 'Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam'];
+  const now = new Date();
+
+  // Début de la semaine actuelle (lundi)
+  const startOfThisWeek = new Date(now);
+  const day = startOfThisWeek.getDay();
+  const diff = startOfThisWeek.getDate() - day + (day === 0 ? -6 : 1); // Lundi = début
+  startOfThisWeek.setDate(diff);
+  startOfThisWeek.setHours(0, 0, 0, 0);
+
+  const weeklyEvolution = [];
+
+  for (let i = 7; i >= 0; i--) {
+    const weekStart = new Date(startOfThisWeek);
+    weekStart.setDate(startOfThisWeek.getDate() - (i * 7));
+    const weekEnd = new Date(weekStart);
+    weekEnd.setDate(weekStart.getDate() + 7);
+
+    let weekOrders = 0;
+    let weekRevenue = 0;
+
+    orders.forEach(order => {
+      if (order.orderStatus === 'cancelled') return; // ✅ Ignorer les annulées
+      if (order.createdAt >= weekStart && order.createdAt < weekEnd) {
+        const sellerItems = order.items.filter(item =>
+          item.productId && sellerProductIdSet.has(item.productId.toString())
+        );
+        if (sellerItems.length > 0) {
+          weekOrders += 1;
+          weekRevenue += sellerItems.reduce(
+            (sum, item) => sum + (item.price * item.quantity),
+            0
+          );
+        }
+      }
+    });
+
+    weeklyEvolution.push({
+      week: `${weekLabels[weekStart.getDay()]} ${weekStart.getDate()}`,
+      orders: weekOrders,
+      revenue: Number(weekRevenue.toFixed(2))
+    });
+  }
+
+  res.status(200).json({
+    success: true,
+    orderInsights: {
+      stats: {
+        totalOrders,
+        completedOrders,
+        cancelledOrders,
+        pendingOrders
+      },
+      rates: {
+        deliveryRate: Number(deliveryRate.toFixed(2)),
+        cancellationRate: Number(cancellationRate.toFixed(2))
+      },
+      weeklyEvolution
+    }
+  });
+});
+
 module.exports = {
   registerSeller,
   getSellerProfile,
@@ -1252,7 +1468,9 @@ module.exports = {
   getSellerPerformance,
   getSellerInventoryStats,
   getSellerRevenueAnalytics,
-  getSellerSalesOverview
+  getSellerSalesOverview,
+  getSellerCustomerInsights,
+  getSellerOrderInsights
 };
 
 

@@ -28,7 +28,9 @@ const {
   getSellerPerformance,
   getSellerInventoryStats,
   getSellerRevenueAnalytics,
-  getSellerSalesOverview
+  getSellerSalesOverview,
+  getSellerCustomerInsights,
+  getSellerOrderInsights
 } = require('../controllers/sellerController');
 
 
@@ -78,6 +80,26 @@ router.get(
   restrictTo('seller'),
   isApprovedSeller,
   getSellerSalesOverview
+);
+
+// PHASE 13.14 — Insights clients du vendeur connecté
+// Placée AVANT la route publique /:id pour éviter le shadowing
+router.get(
+  '/customer-insights',
+  protect,
+  restrictTo('seller'),
+  isApprovedSeller,
+  getSellerCustomerInsights
+);
+
+// PHASE 13.14 — Insights commandes du vendeur connecté
+// Placée AVANT la route publique /:id pour éviter le shadowing
+router.get(
+  '/order-insights',
+  protect,
+  restrictTo('seller'),
+  isApprovedSeller,
+  getSellerOrderInsights
 );
 
 
