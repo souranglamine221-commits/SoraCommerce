@@ -964,6 +964,221 @@ const getSellerPerformance = catchAsync(async (req, res, next) => {
   });
 });
 
+// PHASE 13.13 — Obtenir les analytics de revenus du vendeur connecté
+const getSellerRevenueAnalytics = catchAsync(async (req, res, next) => {
+  const seller = req.seller; // ✅ Utilisation exclusive de req.seller._id
+
+  // ✅ Refuser toute tentative d'utiliser sellerId provenant de req.body, req.params ou req.query
+  if (
+    req.body?.sellerId !== undefined ||
+    req.query?.sellerId !== undefined ||
+    (req.params && req.params.sellerId !== undefined)
+  ) {
+    throw new AppError('Le sellerId fourni par le client est interdit.', 400);
+  }
+
+  // ✅ Récupérer les IDs des produits du vendeur
+  const sellerProducts = await Product.find({ sellerId: seller._id }).select('_id');
+  const sellerProductIds = sellerProducts.map(p => p._id);
+  const sellerProductIdSet = new Set(sellerProductIds.map(id => id.toString()));
+
+  // ✅ Récupérer les commandes (non annulées) contenant les produits du vendeur
+  const orders = await Order.find({
+    'items.productId': { $in: sellerProductIds },
+    orderStatus: { $ne: 'cancelled' }
+  });
+
+  // ✅ Fonction utilitaire : somme des revenus vendeur pour une liste de commandes
+  const computeSellerTotals = (orderList) => {
+    return orderList.reduce(
+      ({ revenue, orders, productsSold }, order) => {
+        let orderRevenue = 0;
+        const sellerItems = order.items.filter(item =>
+          item.productId && sellerProductIdSet.has(item.productId.toString())
+        );
+        sellerItems.forEach(item => {
+          orderRevenue += item.price * item.quantity;
+        });
+        return {
+          revenue: revenue + orderRevenue,
+          orders: orders + (orderRevenue > 0 ? 1 : 0),
+          productsSold: productsSold + sellerItems.reduce((sum, item) => sum + item.quantity, 0)
+        };
+      },
+      { revenue: 0, orders: 0, productsSold: 0 }
+    );
+  };
+
+  // ✅ 1) Revenue global
+  const globalTotals = orders.reduce((sum, order) => {
+    const sellerItems = order.items.filter(item =>
+      item.productId && sellerProductIdSet.has(item.productId.toString())
+    );
+    const sellerTotal = sellerItems.reduce((itemSum, item) => itemSum + (item.price * item.quantity), 0);
+    return sum + sellerTotal;
+  }, 0);
+
+  const totalRevenue = globalTotals;
+  const totalOrders = orders.length;
+  const averageOrderValue = totalOrders > 0 ? totalRevenue / totalOrders : 0;
+
+  // ✅ 2) Revenue par période
+  const now = new Date();
+
+  // Début de la journée (aujourd'hui)
+  const startOfToday = new Date(now);
+  startOfToday.setHours(0, 0, 0, 0);
+
+  // Début de la période des 7 derniers jours (inclus aujourd'hui)
+  const startOfLast7Days = new Date(now);
+  startOfLast7Days.setDate(startOfLast7Days.getDate() - 6);
+  startOfLast7Days.setHours(0, 0, 0, 0);
+
+  // Début de la période des 30 derniers jours (inclus aujourd'hui)
+  const startOfLast30Days = new Date(now);
+  startOfLast30Days.setDate(startOfLast30Days.getDate() - 29);
+  startOfLast30Days.setHours(0, 0, 0, 0);
+
+  // Début de l'année en cours
+  const startOfYear = new Date(now.getFullYear(), 0, 1);
+
+  const periodTotals = (ordersList) => {
+    const totals = computeSellerTotals(ordersList);
+    return {
+      revenue: totals.revenue,
+      orders: totals.orders,
+      productsSold: totals.productsSold
+    };
+  };
+
+  const today = periodTotals(orders.filter(o => o.createdAt >= startOfToday));
+  const last7Days = periodTotals(orders.filter(o => o.createdAt >= startOfLast7Days));
+  const last30Days = periodTotals(orders.filter(o => o.createdAt >= startOfLast30Days));
+  const thisYear = periodTotals(orders.filter(o => o.createdAt >= startOfYear));
+
+  // ✅ 3) Évolution mensuelle (12 derniers mois)
+  const monthNames = [
+    'Janvier', 'Février', 'Mars', 'Avril', 'Mai', 'Juin',
+    'Juillet', 'Août', 'Septembre', 'Octobre', 'Novembre', 'Décembre'
+  ];
+
+  const monthlyEvolution = [];
+  const currentYear = now.getFullYear();
+  const currentMonth = now.getMonth();
+
+  for (let i = 11; i >= 0; i--) {
+    const monthIndex = (currentMonth - i + 48) % 12;
+    const yearOffset = Math.floor((currentMonth - i + 48) / 12) - 4;
+    const year = currentYear + yearOffset;
+    const monthStart = new Date(year, monthIndex, 1);
+    const monthEnd = new Date(year, monthIndex + 1, 1);
+
+    const monthOrders = orders.filter(o => o.createdAt >= monthStart && o.createdAt < monthEnd);
+    const monthTotals = computeSellerTotals(monthOrders);
+
+    monthlyEvolution.push({
+      month: `${monthNames[monthIndex]} ${year}`,
+      revenue: monthTotals.revenue,
+      orders: monthTotals.orders
+    });
+  }
+
+  res.status(200).json({
+    success: true,
+    analytics: {
+      global: {
+        totalRevenue,
+        totalOrders,
+        averageOrderValue
+      },
+      periods: {
+        today,
+        last7Days,
+        last30Days,
+        thisYear
+      },
+      monthlyEvolution
+    }
+  });
+});
+
+// PHASE 13.13 — Obtenir l'aperçu des ventes du vendeur connecté
+const getSellerSalesOverview = catchAsync(async (req, res, next) => {
+  const seller = req.seller; // ✅ Utilisation exclusive de req.seller._id
+
+  // ✅ Refuser toute tentative d'utiliser sellerId provenant de req.body, req.params ou req.query
+  if (
+    req.body?.sellerId !== undefined ||
+    req.query?.sellerId !== undefined ||
+    (req.params && req.params.sellerId !== undefined)
+  ) {
+    throw new AppError('Le sellerId fourni par le client est interdit.', 400);
+  }
+
+  // ✅ Récupérer les IDs des produits du vendeur
+  const sellerProducts = await Product.find({ sellerId: seller._id }).select('_id');
+  const sellerProductIds = sellerProducts.map(p => p._id);
+  const sellerProductIdSet = new Set(sellerProductIds.map(id => id.toString()));
+
+  // ✅ Récupérer toutes les commandes (y compris annulées pour les stats de statut)
+  const orders = await Order.find({
+    'items.productId': { $in: sellerProductIds }
+  });
+
+  // ✅ Récupérer les commandes non annulées pour les revenus / quantités
+  const validOrders = orders.filter(o => o.orderStatus !== 'cancelled');
+
+  // ✅ 1) Produits les plus rentables (Top 5, triés par revenu décroissant)
+  const salesMap = new Map();
+
+  validOrders.forEach(order => {
+    order.items.forEach(item => {
+      if (!item.productId || !sellerProductIdSet.has(item.productId.toString())) {
+        return;
+      }
+      const prodId = item.productId.toString();
+      const current = salesMap.get(prodId) || { productId: item.productId, revenue: 0, quantitySold: 0 };
+      current.revenue += item.price * item.quantity;
+      current.quantitySold += item.quantity;
+      salesMap.set(prodId, current);
+    });
+  });
+
+  const salesList = Array.from(salesMap.values());
+
+  // Récupérer les noms des produits vendus
+  const soldProductIds = salesList.map(s => s.productId);
+  const products = await Product.find({ _id: { $in: soldProductIds } }).select('name');
+  const productNameMap = new Map(products.map(p => [p._id.toString(), p.name]));
+
+  const topProducts = salesList
+    .map(sale => ({
+      productId: sale.productId,
+      name: productNameMap.get(sale.productId.toString()) || 'Produit supprimé',
+      revenue: sale.revenue,
+      quantitySold: sale.quantitySold
+    }))
+    .sort((a, b) => b.revenue - a.revenue)
+    .slice(0, 5);
+
+  // ✅ 2) Statistiques commandes
+  const orderStats = {
+    pending: orders.filter(o => o.orderStatus === 'pending').length,
+    processing: orders.filter(o => o.orderStatus === 'processing').length,
+    shipped: orders.filter(o => o.orderStatus === 'shipped').length,
+    delivered: orders.filter(o => o.orderStatus === 'delivered').length,
+    cancelled: orders.filter(o => o.orderStatus === 'cancelled').length
+  };
+
+  res.status(200).json({
+    success: true,
+    salesOverview: {
+      topProducts,
+      orderStats
+    }
+  });
+});
+
 // PHASE 13.12 — Obtenir les statistiques d'inventaire du vendeur connecté
 const getSellerInventoryStats = catchAsync(async (req, res, next) => {
   const seller = req.seller; // ✅ Utilisation exclusive de req.seller._id
@@ -1035,7 +1250,9 @@ module.exports = {
   sellerReviewSummary,
   getSellerTopProducts,
   getSellerPerformance,
-  getSellerInventoryStats
+  getSellerInventoryStats,
+  getSellerRevenueAnalytics,
+  getSellerSalesOverview
 };
 
 

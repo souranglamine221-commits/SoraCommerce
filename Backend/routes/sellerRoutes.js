@@ -26,7 +26,9 @@ const {
   sellerReviewSummary,
   getSellerTopProducts,
   getSellerPerformance,
-  getSellerInventoryStats
+  getSellerInventoryStats,
+  getSellerRevenueAnalytics,
+  getSellerSalesOverview
 } = require('../controllers/sellerController');
 
 
@@ -56,6 +58,26 @@ router.get(
   restrictTo('seller'),
   isApprovedSeller,
   getSellerTopProducts
+);
+
+// PHASE 13.13 — Analytics de revenus du vendeur connecté
+// Placée AVANT la route publique /:id pour éviter le shadowing
+router.get(
+  '/revenue-analytics',
+  protect,
+  restrictTo('seller'),
+  isApprovedSeller,
+  getSellerRevenueAnalytics
+);
+
+// PHASE 13.13 — Aperçu des ventes du vendeur connecté
+// Placée AVANT la route publique /:id pour éviter le shadowing
+router.get(
+  '/sales-overview',
+  protect,
+  restrictTo('seller'),
+  isApprovedSeller,
+  getSellerSalesOverview
 );
 
 
