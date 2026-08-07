@@ -39,7 +39,10 @@ const {
   getSellerKPIDashboard,
   getSellerSmartInsights,
   getSellerActionPlan,
-  getSellerAIReport
+  getSellerAIReport,
+  getSellerNotifications,
+  markSellerNotificationsRead,
+  getSellerBusinessAlerts
 } = require('../controllers/sellerController');
 
 
@@ -199,6 +202,36 @@ router.get(
   restrictTo('seller'),
   isApprovedSeller,
   getSellerAIReport
+);
+
+// PHASE 13.18 — Notifications du vendeur connecté
+// Placées AVANT la route publique /:id pour éviter le shadowing
+router.get(
+  '/notifications',
+  protect,
+  restrictTo('seller'),
+  isApprovedSeller,
+  getSellerNotifications
+);
+
+// PHASE 13.18 — Marquer toutes les notifications comme lues
+// Placée AVANT la route publique /:id pour éviter le shadowing
+router.put(
+  '/notifications/read',
+  protect,
+  restrictTo('seller'),
+  isApprovedSeller,
+  markSellerNotificationsRead
+);
+
+// PHASE 13.18 — Alertes business du vendeur connecté
+// Placée AVANT la route publique /:id pour éviter le shadowing
+router.get(
+  '/business-alerts',
+  protect,
+  restrictTo('seller'),
+  isApprovedSeller,
+  getSellerBusinessAlerts
 );
 
 

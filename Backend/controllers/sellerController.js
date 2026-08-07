@@ -2667,7 +2667,438 @@ const getSellerAIReport = catchAsync(async (req, res, next) => {
   });
 });
 
+// PHASE 13.18 — Notifications du vendeur connecté
+// Générées dynamiquement à partir des données existantes (Produit, Commande, Avis)
+const getSellerNotifications = catchAsync(async (req, res, next) => {
+  const seller = req.seller; // ✅ Utilisation exclusive de req.seller._id
+
+  // ✅ Refuser toute tentative d'utiliser sellerId provenant de req.body, req.params ou req.query
+  if (
+    req.body?.sellerId !== undefined ||
+    req.query?.sellerId !== undefined ||
+    (req.params && req.params.sellerId !== undefined)
+  ) {
+    throw new AppError('Le sellerId fourni par le client est interdit.', 400);
+  }
+
+  // ✅ Récupérer les produits du vendeur
+  const products = await Product.find({ sellerId: seller._id })
+    .select('name stock approvalStatus isPublished rating numReviews createdAt');
+
+  const sellerProductIds = products.map(p => p._id);
+  const sellerProductIdSet = new Set(sellerProductIds.map(id => id.toString()));
+
+  // ✅ Récupérer les commandes (non annulées) contenant les produits du vendeur
+  const orders = await Order.find({
+    'items.productId': { $in: sellerProductIds },
+    orderStatus: { $ne: 'cancelled' }
+  }).select('userId items orderStatus createdAt');
+
+  // ✅ Récupérer les avis liés aux produits du vendeur
+  const reviews = await Review.find({ productId: { $in: sellerProductIds } })
+    .select('userId productId rating createdAt')
+    .sort({ createdAt: -1 });
+
+  const notifications = [];
+  const lowStockThreshold = 5;
+
+  // ✅ 1) Nouvelle commande
+  orders.forEach(order => {
+    const sellerItems = order.items.filter(item =>
+      item.productId && sellerProductIdSet.has(item.productId.toString())
+    );
+    if (sellerItems.length === 0) return;
+    const quantity = sellerItems.reduce((sum, item) => sum + item.quantity, 0);
+    notifications.push({
+      type: 'new_order',
+      priority: 'high',
+      title: 'Nouvelle commande',
+      message: `Vous avez reçu une nouvelle commande (${quantity} article(s)).`,
+      createdAt: order.createdAt,
+      read: false
+    });
+  });
+
+  // ✅ 2) Produit approuvé
+  products.forEach(product => {
+    if (product.approvalStatus === 'approved' && product.isPublished === false) {
+      notifications.push({
+        type: 'product_approved',
+        priority: 'medium',
+        title: 'Produit approuvé',
+        message: `Votre produit « ${product.name} » a été approuvé.`,
+        createdAt: product.createdAt,
+        read: false
+      });
+    }
+  });
+
+  // ✅ 3) Produit rejeté
+  products.forEach(product => {
+    if (product.approvalStatus === 'rejected') {
+      notifications.push({
+        type: 'product_rejected',
+        priority: 'high',
+        title: 'Produit rejeté',
+        message: `Votre produit « ${product.name} » a été rejeté.`,
+        createdAt: product.createdAt,
+        read: false
+      });
+    }
+  });
+
+  // ✅ 4) Produit dépublié
+  products.forEach(product => {
+    if (product.isPublished === false && product.approvalStatus === 'approved') {
+      notifications.push({
+        type: 'product_unpublished',
+        priority: 'medium',
+        title: 'Produit dépublié',
+        message: `Votre produit « ${product.name} » est actuellement dépublié.`,
+        createdAt: product.createdAt,
+        read: false
+      });
+    }
+  });
+
+  // ✅ 5) Stock faible
+  products.forEach(product => {
+    if (product.stock > 0 && product.stock <= lowStockThreshold) {
+      notifications.push({
+        type: 'low_stock',
+        priority: 'medium',
+        title: 'Stock faible',
+        message: `Il ne reste que ${product.stock} unité(s) de « ${product.name} ».`,
+        createdAt: product.createdAt,
+        read: false
+      });
+    }
+  });
+
+  // ✅ 6) Rupture de stock
+  products.forEach(product => {
+    if (product.stock === 0) {
+      notifications.push({
+        type: 'out_of_stock',
+        priority: 'high',
+        title: 'Rupture de stock',
+        message: `Le produit « ${product.name} » est en rupture de stock.`,
+        createdAt: product.createdAt,
+        read: false
+      });
+    }
+  });
+
+  // ✅ 7) Nouveau client
+  const seenCustomers = new Set();
+  orders.forEach(order => {
+    if (!order.userId) return;
+    const userId = order.userId.toString();
+    if (seenCustomers.has(userId)) return;
+    seenCustomers.add(userId);
+    notifications.push({
+      type: 'new_customer',
+      priority: 'low',
+      title: 'Nouveau client',
+      message: 'Un nouveau client a passé commande dans votre boutique.',
+      createdAt: order.createdAt,
+      read: false
+    });
+  });
+
+  // ✅ 8) Nouvel avis
+  reviews.forEach(review => {
+    notifications.push({
+      type: 'new_review',
+      priority: 'low',
+      title: 'Nouvel avis',
+      message: `Un client a laissé un avis de ${review.rating}/5 sur un de vos produits.`,
+      createdAt: review.createdAt,
+      read: false
+    });
+  });
+
+  // ✅ 9) Meilleur produit vendu
+  const salesMap = new Map();
+  orders.forEach(order => {
+    order.items.forEach(item => {
+      if (!item.productId || !sellerProductIdSet.has(item.productId.toString())) return;
+      const prodId = item.productId.toString();
+      const current = salesMap.get(prodId) || { productId: item.productId, quantitySold: 0 };
+      current.quantitySold += item.quantity;
+      salesMap.set(prodId, current);
+    });
+  });
+
+  const productMap = new Map(products.map(p => [p._id.toString(), p]));
+  let bestProduct = null;
+  let bestQty = 0;
+  salesMap.forEach((sale, prodId) => {
+    if (sale.quantitySold > bestQty) {
+      bestQty = sale.quantitySold;
+      bestProduct = productMap.get(prodId);
+    }
+  });
+
+  if (bestProduct) {
+    notifications.push({
+      type: 'best_selling',
+      priority: 'low',
+      title: 'Meilleure vente',
+      message: `« ${bestProduct.name} » est votre produit le plus vendu (${bestQty} unité(s)).`,
+      createdAt: new Date(),
+      read: false
+    });
+  }
+
+  // ✅ 10) Produit jamais vendu
+  products.forEach(product => {
+    const sale = salesMap.get(product._id.toString());
+    if ((!sale || sale.quantitySold === 0) && product.isPublished) {
+      notifications.push({
+        type: 'product_never_sold',
+        priority: 'low',
+        title: 'Produit sans vente',
+        message: `« ${product.name} » est publié mais n'a pas encore été vendu.`,
+        createdAt: product.createdAt,
+        read: false
+      });
+    }
+  });
+
+  // ✅ Tri par date décroissante
+  notifications.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+  res.status(200).json({
+    success: true,
+    count: notifications.length,
+    notifications
+  });
+});
+
+// PHASE 13.18 — Marquer toutes les notifications comme lues
+// Aucun modèle Notification n'existe : on renvoie simplement une confirmation
+const markSellerNotificationsRead = catchAsync(async (req, res, next) => {
+  const seller = req.seller; // ✅ Utilisation exclusive de req.seller._id
+
+  // ✅ Refuser toute tentative d'utiliser sellerId provenant de req.body, req.params ou req.query
+  if (
+    req.body?.sellerId !== undefined ||
+    req.query?.sellerId !== undefined ||
+    (req.params && req.params.sellerId !== undefined)
+  ) {
+    throw new AppError('Le sellerId fourni par le client est interdit.', 400);
+  }
+
+  res.status(200).json({
+    success: true,
+    message: 'All notifications marked as read.'
+  });
+});
+
+// PHASE 13.18 — Alertes business du vendeur connecté
+// Alertes intelligentes générées à partir des Produits et Commandes
+const getSellerBusinessAlerts = catchAsync(async (req, res, next) => {
+  const seller = req.seller; // ✅ Utilisation exclusive de req.seller._id
+
+  // ✅ Refuser toute tentative d'utiliser sellerId provenant de req.body, req.params ou req.query
+  if (
+    req.body?.sellerId !== undefined ||
+    req.query?.sellerId !== undefined ||
+    (req.params && req.params.sellerId !== undefined)
+  ) {
+    throw new AppError('Le sellerId fourni par le client est interdit.', 400);
+  }
+
+  // ✅ Récupérer les produits du vendeur
+  const products = await Product.find({ sellerId: seller._id })
+    .select('name stock approvalStatus isPublished rating numReviews createdAt');
+
+  const sellerProductIds = products.map(p => p._id);
+  const sellerProductIdSet = new Set(sellerProductIds.map(id => id.toString()));
+
+  // ✅ Récupérer toutes les commandes (y compris annulées pour les taux)
+  const allOrders = await Order.find({
+    'items.productId': { $in: sellerProductIds }
+  }).select('userId items orderStatus createdAt');
+
+  const validOrders = allOrders.filter(o => o.orderStatus !== 'cancelled');
+
+  const alerts = [];
+  const lowStockThreshold = 5;
+
+  // ✅ Helpers
+  const computeRevenue = (orderList) => orderList.reduce((sum, order) => {
+    const sellerItems = order.items.filter(item =>
+      item.productId && sellerProductIdSet.has(item.productId.toString())
+    );
+    return sum + sellerItems.reduce((itemSum, item) => itemSum + (item.price * item.quantity), 0);
+  }, 0);
+
+  const computeCustomers = (orderList) => {
+    const set = new Set();
+    orderList.forEach(o => { if (o.userId) set.add(o.userId.toString()); });
+    return set.size;
+  };
+
+  const growthRate = (current, previous) => {
+    if (!previous || previous === 0) return current === 0 ? 0 : 100;
+    return ((current - previous) / previous) * 100;
+  };
+
+  // ✅ 1) Inventory — out_of_stock
+  const outOfStockCount = products.filter(p => p.stock === 0).length;
+  if (outOfStockCount > 0) {
+    alerts.push({
+      category: 'Inventory',
+      severity: outOfStockCount > 3 ? 'high' : 'medium',
+      title: `${outOfStockCount} produit(s) en rupture de stock`,
+      description: 'Réapprovisionnez rapidement pour éviter de perdre des ventes.'
+    });
+  }
+
+  // ✅ 2) Inventory — low_stock
+  const lowStockCount = products.filter(p => p.stock > 0 && p.stock <= lowStockThreshold).length;
+  if (lowStockCount > 0) {
+    alerts.push({
+      category: 'Inventory',
+      severity: 'low',
+      title: `${lowStockCount} produit(s) avec un stock faible`,
+      description: 'Certains produits approchent de l\'épuisement. Prévoyez un réapprovisionnement.'
+    });
+  }
+
+  // ✅ 3) Sales — comparaison 30 jours vs 30 jours précédents
+  const now = new Date();
+  const startCurrent = new Date(now);
+  startCurrent.setHours(0, 0, 0, 0);
+  startCurrent.setDate(startCurrent.getDate() - 29);
+  const startPrevious = new Date(startCurrent);
+  startPrevious.setDate(startPrevious.getDate() - 30);
+
+  const currentOrders = validOrders.filter(o => o.createdAt >= startCurrent);
+  const previousOrders = validOrders.filter(o => o.createdAt >= startPrevious && o.createdAt < startCurrent);
+
+  const currentRevenue = computeRevenue(currentOrders);
+  const previousRevenue = computeRevenue(previousOrders);
+  const revenueChange = growthRate(currentRevenue, previousRevenue);
+
+  if (revenueChange < -10) {
+    alerts.push({
+      category: 'Sales',
+      severity: 'high',
+      title: 'Baisse du chiffre d\'affaires',
+      description: `Vos revenus ont diminué de ${Math.abs(revenueChange).toFixed(1)}% sur les 30 derniers jours.`
+    });
+  } else if (revenueChange > 10) {
+    alerts.push({
+      category: 'Sales',
+      severity: 'low',
+      title: 'Croissance du chiffre d\'affaires',
+      description: `Vos revenus ont augmenté de ${revenueChange.toFixed(1)}% sur les 30 derniers jours.`
+    });
+  }
+
+  // ✅ 4) Products — never_sold
+  const salesMap = new Map();
+  validOrders.forEach(order => {
+    order.items.forEach(item => {
+      if (!item.productId || !sellerProductIdSet.has(item.productId.toString())) return;
+      const prodId = item.productId.toString();
+      const current = salesMap.get(prodId) || { productId: item.productId, quantitySold: 0 };
+      current.quantitySold += item.quantity;
+      salesMap.set(prodId, current);
+    });
+  });
+
+  const neverSold = products.filter(p => {
+    const sale = salesMap.get(p._id.toString());
+    return p.isPublished && (!sale || sale.quantitySold === 0);
+  });
+  if (neverSold.length > 0) {
+    alerts.push({
+      category: 'Products',
+      severity: 'medium',
+      title: `${neverSold.length} produit(s) sans vente`,
+      description: 'Améliorez la visibilité ou le prix des produits publiés qui n\'ont pas encore été vendus.'
+    });
+  }
+
+  // ✅ 5) Products — rejected
+  const rejectedCount = products.filter(p => p.approvalStatus === 'rejected').length;
+  if (rejectedCount > 0) {
+    alerts.push({
+      category: 'Products',
+      severity: 'high',
+      title: `${rejectedCount} produit(s) rejeté(s)`,
+      description: 'Certains de vos produits ont été rejetés. Vérifiez les motifs et corrigez-les.'
+    });
+  }
+
+  // ✅ 6) Products — unpublished
+  const unpublishedCount = products.filter(p => p.isPublished === false && p.approvalStatus === 'approved').length;
+  if (unpublishedCount > 0) {
+    alerts.push({
+      category: 'Products',
+      severity: 'low',
+      title: `${unpublishedCount} produit(s) dépublié(s)`,
+      description: 'Des produits approuvés ne sont pas publiés. Publiez-les pour les rendre visibles.'
+    });
+  }
+
+  // ✅ 7) Reviews — low_rating
+  const lowRated = products.filter(p => p.numReviews > 0 && p.rating < 3.5);
+  if (lowRated.length > 0) {
+    alerts.push({
+      category: 'Reviews',
+      severity: 'medium',
+      title: `${lowRated.length} produit(s) avec de faibles avis`,
+      description: 'Analyser les avis clients pour améliorer la qualité de vos produits.'
+    });
+  }
+
+  // ✅ 8) Reviews — excellent_rating
+  const excellentRated = products.filter(p => p.numReviews > 0 && p.rating >= 4.5);
+  if (excellentRated.length > 0) {
+    alerts.push({
+      category: 'Reviews',
+      severity: 'low',
+      title: `${excellentRated.length} produit(s) très bien noté(s)`,
+      description: 'Vos clients apprécient ces produits. Mettez-les en avant pour doper les ventes.'
+    });
+  }
+
+  // ✅ 9) Customers — comparison 30 jours vs 30 jours précédents
+  const currentCustomers = computeCustomers(currentOrders);
+  const previousCustomers = computeCustomers(previousOrders);
+  const customerChange = growthRate(currentCustomers, previousCustomers);
+
+  if (customerChange > 10) {
+    alerts.push({
+      category: 'Customers',
+      severity: 'low',
+      title: 'Croissance de la clientèle',
+      description: `Votre clientèle a augmenté de ${customerChange.toFixed(1)}% sur les 30 derniers jours.`
+    });
+  } else if (customerChange < -10 && currentCustomers > 0) {
+    alerts.push({
+      category: 'Customers',
+      severity: 'medium',
+      title: 'Baisse de la clientèle',
+      description: `Votre clientèle a diminué de ${Math.abs(customerChange).toFixed(1)}% récemment.`
+    });
+  }
+
+  res.status(200).json({
+    success: true,
+    alerts
+  });
+});
+
 module.exports = {
+  getSellerNotifications,
+  markSellerNotificationsRead,
+  getSellerBusinessAlerts,
   getSellerSmartInsights,
   getSellerActionPlan,
   getSellerAIReport,
