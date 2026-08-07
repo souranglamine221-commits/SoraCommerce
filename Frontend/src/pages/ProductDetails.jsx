@@ -22,12 +22,12 @@ const ProductDetails = () => {
   useEffect(() => {
     const fetchProduct = async () => {
       try {
-        const productResponse = await axios.get(`${API_URL}/api/products/${id}`);
+        const productResponse = await axios.get(`${API_URL}/products/${id}`);
         const currentProduct = productResponse.data;
         setProduct(currentProduct);
 
         // Fetch similar products
-        const productsResponse = await axios.get(`${API_URL}/api/products`);
+        const productsResponse = await axios.get(`${API_URL}/products`);
         const similar = productsResponse.data.products || productsResponse.data;
         setSimilarProducts(
           similar
@@ -37,7 +37,7 @@ const ProductDetails = () => {
 
         // Fetch reviews
         try {
-          const reviewsResponse = await axios.get(`${API_URL}/api/reviews/product/${id}`);
+          const reviewsResponse = await axios.get(`${API_URL}/reviews/product/${id}`);
           setReviews(reviewsResponse.data.reviews || []);
         } catch (reviewError) {
           console.error('Erreur chargement avis:', reviewError);

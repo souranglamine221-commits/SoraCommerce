@@ -13,4 +13,3 @@ const CurrencyDisplay = ({ price, currency }) => {
 
 export default CurrencyDisplay;
 
-<IO>                                                                                                      </IO>

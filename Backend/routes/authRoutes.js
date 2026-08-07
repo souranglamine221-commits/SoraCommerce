@@ -298,6 +298,28 @@ router.post('/login', async (req, res) => {
 });
 
 // ==========================================
+// ✅ ROUTE GET /api/auth/me (Utilisateur connecté)
+// ==========================================
+router.get('/me', protect, async (req, res) => {
+  try {
+    const user = req.user.toObject();
+    delete user.password;
+
+    res.json({
+      success: true,
+      user
+    });
+  } catch (error) {
+    console.error('❌ Erreur récupération profil:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur serveur lors de la récupération du profil',
+      error: error.message
+    });
+  }
+});
+
+// ==========================================
 // ✅ ROUTE PUT /api/auth/profile (Modifier profil)
 // ==========================================
 router.put('/profile', protect, async (req, res) => {

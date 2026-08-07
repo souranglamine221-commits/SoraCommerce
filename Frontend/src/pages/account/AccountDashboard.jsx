@@ -31,7 +31,7 @@ const AccountDashboard = () => {
   const fetchUserData = async () => {
     try {
       const token = localStorage.getItem('sora_token');
-      const res = await axios.get(`${API_URL}/api/users/profile`, {
+      const res = await axios.get(`${API_URL}/users/profile`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       setUserData(res.data.user);
@@ -174,7 +174,7 @@ const ProfileSection = ({ userData, onUpdate }) => {
 
     try {
       const token = localStorage.getItem('sora_token');
-      await axios.put(`${API_URL}/api/users/profile`, formData, {
+      await axios.put(`${API_URL}/users/profile`, formData, {
         headers: { Authorization: `Bearer ${token}` }
       });
       alert('Profil mis à jour avec succès !');
@@ -263,7 +263,7 @@ const OrdersSection = ({ userId }) => {
   const fetchOrders = async () => {
     try {
       const token = localStorage.getItem('sora_token');
-      const res = await axios.get(`${API_URL}/api/orders/my-orders`, {
+      const res = await axios.get(`${API_URL}/orders/my-orders`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       setOrders(res.data.orders || []);
@@ -344,11 +344,11 @@ const AddressesSection = ({ userData, onUpdate }) => {
       const token = localStorage.getItem('sora_token');
       
       if (editingAddress) {
-        await axios.put(`${API_URL}/api/users/address/${editingAddress}`, formData, {
+        await axios.put(`${API_URL}/users/address/${editingAddress}`, formData, {
           headers: { Authorization: `Bearer ${token}` }
         });
       } else {
-        await axios.post(`${API_URL}/api/users/address`, formData, {
+        await axios.post(`${API_URL}/users/address`, formData, {
           headers: { Authorization: `Bearer ${token}` }
         });
       }
@@ -377,7 +377,7 @@ const AddressesSection = ({ userData, onUpdate }) => {
 
     try {
       const token = localStorage.getItem('sora_token');
-      await axios.delete(`${API_URL}/api/users/address/${addressId}`, {
+      await axios.delete(`${API_URL}/users/address/${addressId}`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       onUpdate();
@@ -547,7 +547,7 @@ const FavoritesSection = () => {
   const fetchFavorites = async () => {
     try {
       const token = localStorage.getItem('sora_token');
-      const res = await axios.get(`${API_URL}/api/users/favorites`, {
+      const res = await axios.get(`${API_URL}/users/favorites`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       setFavorites(res.data.favorites || []);
@@ -561,7 +561,7 @@ const FavoritesSection = () => {
   const handleRemoveFavorite = async (productId) => {
     try {
       const token = localStorage.getItem('sora_token');
-      await axios.delete(`${API_URL}/api/users/favorites/${productId}`, {
+      await axios.delete(`${API_URL}/users/favorites/${productId}`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       fetchFavorites();
@@ -627,7 +627,7 @@ const SettingsSection = ({ userData, onUpdate }) => {
 
     try {
       const token = localStorage.getItem('sora_token');
-      await axios.put(`${API_URL}/api/users/preferences`, preferences, {
+      await axios.put(`${API_URL}/users/preferences`, preferences, {
         headers: { Authorization: `Bearer ${token}` }
       });
       
