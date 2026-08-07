@@ -1445,7 +1445,270 @@ const getSellerOrderInsights = catchAsync(async (req, res, next) => {
   });
 });
 
+// PHASE 13.15 — Analytics de croissance du vendeur connecté
+// Comparaison des 30 derniers jours vs les 30 jours précédents
+const getSellerGrowthAnalytics = catchAsync(async (req, res, next) => {
+  const seller = req.seller; // ✅ Utilisation exclusive de req.seller._id
+
+  // ✅ Refuser toute tentative d'utiliser sellerId provenant de req.body, req.params ou req.query
+  if (
+    req.body?.sellerId !== undefined ||
+    req.query?.sellerId !== undefined ||
+    (req.params && req.params.sellerId !== undefined)
+  ) {
+    throw new AppError('Le sellerId fourni par le client est interdit.', 400);
+  }
+
+  // ✅ Récupérer les IDs des produits du vendeur
+  const sellerProducts = await Product.find({ sellerId: seller._id }).select('_id');
+  const sellerProductIds = sellerProducts.map(p => p._id);
+  const sellerProductIdSet = new Set(sellerProductIds.map(id => id.toString()));
+
+  // ✅ Définition des périodes de comparaison
+  const now = new Date();
+  const startOfCurrentPeriod = new Date(now);
+  startOfCurrentPeriod.setHours(0, 0, 0, 0);
+  startOfCurrentPeriod.setDate(startOfCurrentPeriod.getDate() - 29);
+
+  const startOfPreviousPeriod = new Date(startOfCurrentPeriod);
+  startOfPreviousPeriod.setDate(startOfPreviousPeriod.getDate() - 30);
+
+  // ✅ Récupérer les commandes non annulées des 60 derniers jours contenant les produits du vendeur
+  const orders = await Order.find({
+    'items.productId': { $in: sellerProductIds },
+    orderStatus: { $ne: 'cancelled' },
+    createdAt: { $gte: startOfPreviousPeriod }
+  }).select('userId items createdAt');
+
+  // ✅ Fonction utilitaire : calculer revenu, commandes et clients d'une liste de commandes
+  const computeMetrics = (orderList) => {
+    const customerSet = new Set();
+    let revenue = 0;
+
+    orderList.forEach(order => {
+      if (order.userId) customerSet.add(order.userId.toString());
+      const sellerItems = order.items.filter(item =>
+        item.productId && sellerProductIdSet.has(item.productId.toString())
+      );
+      sellerItems.forEach(item => {
+        revenue += item.price * item.quantity;
+      });
+    });
+
+    return {
+      revenue,
+      orders: orderList.length,
+      customers: customerSet.size
+    };
+  };
+
+  const currentOrders = orders.filter(o => o.createdAt >= startOfCurrentPeriod);
+  const previousOrders = orders.filter(o => o.createdAt < startOfCurrentPeriod);
+
+  const currentPeriod = computeMetrics(currentOrders);
+  const previousPeriod = computeMetrics(previousOrders);
+
+  // ✅ Pourcentages de croissance avec protection contre la division par zéro
+  const growthRate = (current, previous) => {
+    if (!previous || previous === 0) {
+      return current === 0 ? 0 : 100;
+    }
+    return ((current - previous) / previous) * 100;
+  };
+
+  res.status(200).json({
+    success: true,
+    growthAnalytics: {
+      revenueGrowth: Number(growthRate(currentPeriod.revenue, previousPeriod.revenue).toFixed(2)),
+      orderGrowth: Number(growthRate(currentPeriod.orders, previousPeriod.orders).toFixed(2)),
+      customerGrowth: Number(growthRate(currentPeriod.customers, previousPeriod.customers).toFixed(2)),
+      currentPeriod,
+      previousPeriod
+    }
+  });
+});
+
+// PHASE 13.15 — Performance des produits du vendeur connecté
+const getSellerProductPerformance = catchAsync(async (req, res, next) => {
+  const seller = req.seller; // ✅ Utilisation exclusive de req.seller._id
+
+  // ✅ Refuser toute tentative d'utiliser sellerId provenant de req.body, req.params ou req.query
+  if (
+    req.body?.sellerId !== undefined ||
+    req.query?.sellerId !== undefined ||
+    (req.params && req.params.sellerId !== undefined)
+  ) {
+    throw new AppError('Le sellerId fourni par le client est interdit.', 400);
+  }
+
+  // ✅ Récupérer tous les produits du vendeur
+  const products = await Product.find({ sellerId: seller._id })
+    .select('name image price stock category');
+  const productIdSet = new Set(products.map(p => p._id.toString()));
+
+  // ✅ Récupérer les commandes non annulées contenant les produits du vendeur
+  const orders = await Order.find({
+    'items.productId': { $in: products.map(p => p._id) },
+    orderStatus: { $ne: 'cancelled' }
+  });
+
+  // ✅ Agréger les ventes par produit
+  const salesMap = new Map();
+  orders.forEach(order => {
+    order.items.forEach(item => {
+      if (!item.productId || !productIdSet.has(item.productId.toString())) return;
+      const prodId = item.productId.toString();
+      const current = salesMap.get(prodId) || { productId: item.productId, quantitySold: 0, revenue: 0 };
+      current.quantitySold += item.quantity;
+      current.revenue += item.price * item.quantity;
+      salesMap.set(prodId, current);
+    });
+  });
+
+  const productMap = new Map(products.map(p => [p._id.toString(), p]));
+
+  // ✅ Top 10 produits les plus vendus
+  const bestSellingProducts = Array.from(salesMap.values())
+    .map(sale => {
+      const product = productMap.get(sale.productId.toString());
+      if (!product) return null;
+      return {
+        productId: product._id,
+        name: product.name,
+        image: product.image || (product.images && product.images[0]) || null,
+        price: product.price,
+        category: product.category,
+        quantitySold: sale.quantitySold,
+        revenue: sale.revenue
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.quantitySold - a.quantitySold)
+    .slice(0, 10);
+
+  // ✅ Produits peu performants (n'ont jamais été vendus)
+  const lowPerformingProducts = products
+    .map(product => {
+      const sale = salesMap.get(product._id.toString());
+      return {
+        productId: product._id,
+        name: product.name,
+        image: product.image || (product.images && product.images[0]) || null,
+        price: product.price,
+        category: product.category,
+        quantitySold: sale ? sale.quantitySold : 0,
+        revenue: sale ? sale.revenue : 0
+      };
+    })
+    .filter(p => p.quantitySold === 0)
+    .slice(0, 10);
+
+  // ✅ Produits à risque (stock faible ou nul)
+  const lowStockThreshold = 5;
+  const inventoryRisks = products
+    .filter(p => p.stock === 0 || p.stock <= lowStockThreshold)
+    .map(product => ({
+      productId: product._id,
+      name: product.name,
+      image: product.image || (product.images && product.images[0]) || null,
+      price: product.price,
+      stock: product.stock,
+      status: product.stock === 0 ? 'out_of_stock' : 'low_stock'
+    }))
+    .sort((a, b) => a.stock - b.stock);
+
+  res.status(200).json({
+    success: true,
+    productPerformance: {
+      bestSellingProducts,
+      lowPerformingProducts,
+      inventoryRisks
+    }
+  });
+});
+
+// PHASE 13.15 — Résumé du dashboard du vendeur connecté
+const getSellerDashboardSummary = catchAsync(async (req, res, next) => {
+  const seller = req.seller; // ✅ Utilisation exclusive de req.seller._id
+
+  // ✅ Refuser toute tentative d'utiliser sellerId provenant de req.body, req.params ou req.query
+  if (
+    req.body?.sellerId !== undefined ||
+    req.query?.sellerId !== undefined ||
+    (req.params && req.params.sellerId !== undefined)
+  ) {
+    throw new AppError('Le sellerId fourni par le client est interdit.', 400);
+  }
+
+  // ✅ Récupérer tous les produits du vendeur
+  const sellerProducts = await Product.find({ sellerId: seller._id })
+    .select('name image price stock');
+  const sellerProductIds = sellerProducts.map(p => p._id);
+  const sellerProductIdSet = new Set(sellerProductIds.map(id => id.toString()));
+
+  // ✅ Récupérer les commandes non annulées contenant les produits du vendeur
+  const orders = await Order.find({
+    'items.productId': { $in: sellerProductIds },
+    orderStatus: { $ne: 'cancelled' }
+  }).select('userId items createdAt');
+
+  // ✅ Revenus totaux, clients uniques et agrégation des ventes
+  const customerSet = new Set();
+  let totalRevenue = 0;
+  const salesMap = new Map();
+
+  orders.forEach(order => {
+    if (order.userId) customerSet.add(order.userId.toString());
+    const sellerItems = order.items.filter(item =>
+      item.productId && sellerProductIdSet.has(item.productId.toString())
+    );
+    sellerItems.forEach(item => {
+      totalRevenue += item.price * item.quantity;
+      const prodId = item.productId.toString();
+      const current = salesMap.get(prodId) || { productId: item.productId, quantitySold: 0, revenue: 0 };
+      current.quantitySold += item.quantity;
+      current.revenue += item.price * item.quantity;
+      salesMap.set(prodId, current);
+    });
+  });
+
+  // ✅ Dernière commande
+  const sortedOrders = [...orders].sort((a, b) => b.createdAt - a.createdAt);
+  const lastOrderDate = sortedOrders.length > 0 ? sortedOrders[0].createdAt : null;
+
+  // ✅ Produit le plus vendu
+  const productMap = new Map(sellerProducts.map(p => [p._id.toString(), p]));
+  let topProduct = null;
+  const bestSale = Array.from(salesMap.values()).sort((a, b) => b.quantitySold - a.quantitySold)[0];
+  if (bestSale) {
+    const product = productMap.get(bestSale.productId.toString());
+    if (product) {
+      topProduct = {
+        productId: product._id,
+        name: product.name,
+        quantitySold: bestSale.quantitySold,
+        revenue: Number(bestSale.revenue.toFixed(2))
+      };
+    }
+  }
+
+  res.status(200).json({
+    success: true,
+    summary: {
+      revenue: Number(totalRevenue.toFixed(2)),
+      orders: orders.length,
+      products: sellerProducts.length,
+      customers: customerSet.size,
+      topProduct,
+      lastOrderDate
+    }
+  });
+});
+
 module.exports = {
+  getSellerGrowthAnalytics,
+  getSellerProductPerformance,
+  getSellerDashboardSummary,
   registerSeller,
   getSellerProfile,
   updateSellerProfile,

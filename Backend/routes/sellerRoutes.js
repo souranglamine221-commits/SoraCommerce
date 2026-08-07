@@ -30,7 +30,10 @@ const {
   getSellerRevenueAnalytics,
   getSellerSalesOverview,
   getSellerCustomerInsights,
-  getSellerOrderInsights
+  getSellerOrderInsights,
+  getSellerGrowthAnalytics,
+  getSellerProductPerformance,
+  getSellerDashboardSummary
 } = require('../controllers/sellerController');
 
 
@@ -100,6 +103,36 @@ router.get(
   restrictTo('seller'),
   isApprovedSeller,
   getSellerOrderInsights
+);
+
+// PHASE 13.15 — Analytics de croissance du vendeur connecté
+// Placée AVANT la route publique /:id pour éviter le shadowing
+router.get(
+  '/growth-analytics',
+  protect,
+  restrictTo('seller'),
+  isApprovedSeller,
+  getSellerGrowthAnalytics
+);
+
+// PHASE 13.15 — Performance des produits du vendeur connecté
+// Placée AVANT la route publique /:id pour éviter le shadowing
+router.get(
+  '/product-performance',
+  protect,
+  restrictTo('seller'),
+  isApprovedSeller,
+  getSellerProductPerformance
+);
+
+// PHASE 13.15 — Résumé du dashboard du vendeur connecté
+// Placée AVANT la route publique /:id pour éviter le shadowing
+router.get(
+  '/dashboard-summary',
+  protect,
+  restrictTo('seller'),
+  isApprovedSeller,
+  getSellerDashboardSummary
 );
 
 
