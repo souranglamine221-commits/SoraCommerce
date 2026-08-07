@@ -3095,7 +3095,699 @@ const getSellerBusinessAlerts = catchAsync(async (req, res, next) => {
   });
 });
 
+// PHASE 13.19 — Analytics avancés du vendeur connecté
+// Dashboard complet : revenus, commandes, clients, produits
+const getSellerAdvancedAnalytics = catchAsync(async (req, res, next) => {
+  const seller = req.seller; // ✅ Utilisation exclusive de req.seller._id
+
+  // ✅ Refuser toute tentative d'utiliser sellerId provenant de req.body, req.params ou req.query
+  if (
+    req.body?.sellerId !== undefined ||
+    req.query?.sellerId !== undefined ||
+    (req.params && req.params.sellerId !== undefined)
+  ) {
+    throw new AppError('Le sellerId fourni par le client est interdit.', 400);
+  }
+
+  // ✅ Récupérer les produits du vendeur
+  const products = await Product.find({ sellerId: seller._id })
+    .select('name price stock approvalStatus isPublished rating numReviews');
+  const sellerProductIds = products.map(p => p._id);
+  const sellerProductIdSet = new Set(sellerProductIds.map(id => id.toString()));
+
+  // ✅ Récupérer toutes les commandes (y compris annulées pour les taux)
+  const allOrders = await Order.find({
+    'items.productId': { $in: sellerProductIds }
+  }).select('userId items orderStatus createdAt');
+
+  // ✅ Commandes non annulées pour revenus / clients / commandes
+  const validOrders = allOrders.filter(o => o.orderStatus !== 'cancelled');
+
+  // ✅ Fonction utilitaire : revenu vendeur d'une liste de commandes
+  const computeRevenue = (orderList) => {
+    return orderList.reduce((sum, order) => {
+      const sellerItems = order.items.filter(item =>
+        item.productId && sellerProductIdSet.has(item.productId.toString())
+      );
+      return sum + sellerItems.reduce((itemSum, item) => itemSum + (item.price * item.quantity), 0);
+    }, 0);
+  };
+
+  // ✅ Fonction utilitaire : clients uniques d'une liste de commandes
+  const computeCustomers = (orderList) => {
+    const set = new Set();
+    orderList.forEach(o => { if (o.userId) set.add(o.userId.toString()); });
+    return set.size;
+  };
+
+  // ✅ Fonction utilitaire : taux de croissance
+  const growthRate = (current, previous) => {
+    if (!previous || previous === 0) return current === 0 ? 0 : 100;
+    return ((current - previous) / previous) * 100;
+  };
+
+  // ✅ Périodes
+  const now = new Date();
+  const startOfToday = new Date(now);
+  startOfToday.setHours(0, 0, 0, 0);
+
+  const startOfLast7Days = new Date(now);
+  startOfLast7Days.setDate(startOfLast7Days.getDate() - 6);
+  startOfLast7Days.setHours(0, 0, 0, 0);
+
+  const startOfLast30Days = new Date(now);
+  startOfLast30Days.setDate(startOfLast30Days.getDate() - 29);
+  startOfLast30Days.setHours(0, 0, 0, 0);
+
+  const startOfLast90Days = new Date(now);
+  startOfLast90Days.setDate(startOfLast90Days.getDate() - 89);
+  startOfLast90Days.setHours(0, 0, 0, 0);
+
+  // ✅ Commandes par période
+  const todayOrders = validOrders.filter(o => o.createdAt >= startOfToday);
+  const last7Orders = validOrders.filter(o => o.createdAt >= startOfLast7Days);
+  const last30Orders = validOrders.filter(o => o.createdAt >= startOfLast30Days);
+  const last90Orders = validOrders.filter(o => o.createdAt >= startOfLast90Days);
+
+  // ✅ Revenus par période
+  const todayRevenue = computeRevenue(todayOrders);
+  const last7Revenue = computeRevenue(last7Orders);
+  const last30Revenue = computeRevenue(last30Orders);
+  const last90Revenue = computeRevenue(last90Orders);
+
+  // ✅ Croissance des revenus (30 derniers jours vs 30 jours précédents)
+  const startPrevious30Days = new Date(startOfLast30Days);
+  startPrevious30Days.setDate(startPrevious30Days.getDate() - 30);
+  const previous30Orders = validOrders.filter(o => o.createdAt >= startPrevious30Days && o.createdAt < startOfLast30Days);
+  const previous30Revenue = computeRevenue(previous30Orders);
+  const revenueGrowthRate = growthRate(last30Revenue, previous30Revenue);
+
+  // ✅ Commandes
+  const totalOrders = validOrders.length;
+  const todayOrderCount = todayOrders.length;
+  const last7OrderCount = last7Orders.length;
+  const last30OrderCount = last30Orders.length;
+
+  // ✅ Conversion trend (30 jours vs 30 jours précédents)
+  const conversionTrend = Number(growthRate(last30OrderCount, previous30Orders.length).toFixed(2));
+
+  // ✅ Clients
+  const customerSet = new Set();
+  validOrders.forEach(o => { if (o.userId) customerSet.add(o.userId.toString()); });
+  const totalCustomers = customerSet.size;
+
+  // ✅ Nouveaux clients : première commande dans les 30 derniers jours
+  const customerFirstOrderMap = new Map();
+  [...validOrders]
+    .sort((a, b) => a.createdAt - b.createdAt)
+    .forEach(o => {
+      if (!o.userId) return;
+      const userId = o.userId.toString();
+      if (!customerFirstOrderMap.has(userId)) {
+        customerFirstOrderMap.set(userId, o.createdAt);
+      }
+    });
+
+  const newCustomers = Array.from(customerFirstOrderMap.values()).filter(d => d >= startOfLast30Days).length;
+  const returningCustomers = totalCustomers - newCustomers;
+
+  // ✅ Customer growth rate (30 derniers jours vs 30 jours précédents)
+  const currentPeriodCustomers = computeCustomers(last30Orders);
+  const previousPeriodCustomers = computeCustomers(previous30Orders);
+  const customerGrowthRate = growthRate(currentPeriodCustomers, previousPeriodCustomers);
+
+  // ✅ Produits
+  const totalProducts = products.length;
+  const activeProducts = products.filter(p => p.stock > 0).length;
+  const lowStockThreshold = 5;
+  const lowStock = products.filter(p => p.stock > 0 && p.stock <= lowStockThreshold).length;
+  const outOfStock = products.filter(p => p.stock === 0).length;
+
+  // ✅ Best seller
+  const salesMap = new Map();
+  validOrders.forEach(order => {
+    order.items.forEach(item => {
+      if (!item.productId || !sellerProductIdSet.has(item.productId.toString())) return;
+      const prodId = item.productId.toString();
+      const current = salesMap.get(prodId) || { productId: item.productId, quantitySold: 0, revenue: 0 };
+      current.quantitySold += item.quantity;
+      current.revenue += item.price * item.quantity;
+      salesMap.set(prodId, current);
+    });
+  });
+
+  const productMap = new Map(products.map(p => [p._id.toString(), p]));
+  let bestSeller = null;
+  let bestQty = 0;
+  salesMap.forEach((sale, prodId) => {
+    if (sale.quantitySold > bestQty) {
+      bestQty = sale.quantitySold;
+      const product = productMap.get(prodId);
+      if (product) {
+        bestSeller = {
+          productId: product._id,
+          name: product.name,
+          quantitySold: sale.quantitySold,
+          revenue: Number(sale.revenue.toFixed(2))
+        };
+      }
+    }
+  });
+
+  res.status(200).json({
+    success: true,
+    analytics: {
+      revenue: {
+        today: Number(todayRevenue.toFixed(2)),
+        last7Days: Number(last7Revenue.toFixed(2)),
+        last30Days: Number(last30Revenue.toFixed(2)),
+        last90Days: Number(last90Revenue.toFixed(2)),
+        growthRate: Number(revenueGrowthRate.toFixed(2))
+      },
+      orders: {
+        total: totalOrders,
+        today: todayOrderCount,
+        last7Days: last7OrderCount,
+        last30Days: last30OrderCount,
+        conversionTrend
+      },
+      customers: {
+        total: totalCustomers,
+        newCustomers,
+        returningCustomers,
+        customerGrowthRate: Number(customerGrowthRate.toFixed(2))
+      },
+      products: {
+        total: totalProducts,
+        active: activeProducts,
+        lowStock,
+        outOfStock,
+        bestSeller
+      }
+    }
+  });
+});
+
+// PHASE 13.19 — Tendances des ventes du vendeur connecté
+// Évolution quotidienne (30 jours), hebdomadaire (12 semaines), mensuelle (12 mois)
+const getSellerSalesTrends = catchAsync(async (req, res, next) => {
+  const seller = req.seller; // ✅ Utilisation exclusive de req.seller._id
+
+  // ✅ Refuser toute tentative d'utiliser sellerId provenant de req.body, req.params ou req.query
+  if (
+    req.body?.sellerId !== undefined ||
+    req.query?.sellerId !== undefined ||
+    (req.params && req.params.sellerId !== undefined)
+  ) {
+    throw new AppError('Le sellerId fourni par le client est interdit.', 400);
+  }
+
+  // ✅ Récupérer les IDs des produits du vendeur
+  const sellerProducts = await Product.find({ sellerId: seller._id }).select('_id');
+  const sellerProductIds = sellerProducts.map(p => p._id);
+  const sellerProductIdSet = new Set(sellerProductIds.map(id => id.toString()));
+
+  // ✅ Récupérer les commandes non annulées des 12 derniers mois
+  const twelveMonthsAgo = new Date();
+  twelveMonthsAgo.setMonth(twelveMonthsAgo.getMonth() - 12);
+
+  const orders = await Order.find({
+    'items.productId': { $in: sellerProductIds },
+    orderStatus: { $ne: 'cancelled' },
+    createdAt: { $gte: twelveMonthsAgo }
+  }).select('items createdAt');
+
+  // ✅ Fonction utilitaire : revenu vendeur d'une liste de commandes
+  const computeRevenue = (orderList) => {
+    return orderList.reduce((sum, order) => {
+      const sellerItems = order.items.filter(item =>
+        item.productId && sellerProductIdSet.has(item.productId.toString())
+      );
+      return sum + sellerItems.reduce((itemSum, item) => itemSum + (item.price * item.quantity), 0);
+    }, 0);
+  };
+
+  // ✅ 1) Tendance quotidienne (30 derniers jours)
+  const daily = [];
+  const now = new Date();
+  const startOfToday = new Date(now);
+  startOfToday.setHours(0, 0, 0, 0);
+
+  for (let i = 29; i >= 0; i--) {
+    const dayStart = new Date(startOfToday);
+    dayStart.setDate(startOfToday.getDate() - i);
+    const dayEnd = new Date(dayStart);
+    dayEnd.setDate(dayStart.getDate() + 1);
+
+    const dayOrders = orders.filter(o => o.createdAt >= dayStart && o.createdAt < dayEnd);
+    daily.push({
+      date: dayStart.toISOString().split('T')[0],
+      orders: dayOrders.length,
+      revenue: Number(computeRevenue(dayOrders).toFixed(2))
+    });
+  }
+
+  // ✅ 2) Tendance hebdomadaire (12 dernières semaines, début lundi)
+  const weekly = [];
+  const startOfThisWeek = new Date(now);
+  const day = startOfThisWeek.getDay();
+  const diff = startOfThisWeek.getDate() - day + (day === 0 ? -6 : 1); // Lundi = début
+  startOfThisWeek.setDate(diff);
+  startOfThisWeek.setHours(0, 0, 0, 0);
+
+  for (let i = 11; i >= 0; i--) {
+    const weekStart = new Date(startOfThisWeek);
+    weekStart.setDate(startOfThisWeek.getDate() - (i * 7));
+    const weekEnd = new Date(weekStart);
+    weekEnd.setDate(weekStart.getDate() + 7);
+
+    const weekOrders = orders.filter(o => o.createdAt >= weekStart && o.createdAt < weekEnd);
+    weekly.push({
+      date: weekStart.toISOString().split('T')[0],
+      orders: weekOrders.length,
+      revenue: Number(computeRevenue(weekOrders).toFixed(2))
+    });
+  }
+
+  // ✅ 3) Tendance mensuelle (12 derniers mois)
+  const monthly = [];
+  const currentYear = now.getFullYear();
+  const currentMonth = now.getMonth();
+
+  for (let i = 11; i >= 0; i--) {
+    const monthIndex = (currentMonth - i + 48) % 12;
+    const yearOffset = Math.floor((currentMonth - i + 48) / 12) - 4;
+    const year = currentYear + yearOffset;
+
+    const monthStart = new Date(year, monthIndex, 1);
+    const monthEnd = new Date(year, monthIndex + 1, 1);
+
+    const monthOrders = orders.filter(o => o.createdAt >= monthStart && o.createdAt < monthEnd);
+    monthly.push({
+      date: `${year}-${String(monthIndex + 1).padStart(2, '0')}`,
+      orders: monthOrders.length,
+      revenue: Number(computeRevenue(monthOrders).toFixed(2))
+    });
+  }
+
+  res.status(200).json({
+    success: true,
+    trends: {
+      daily,
+      weekly,
+      monthly
+    }
+  });
+});
+
+// PHASE 13.19 — Analytics clients avancés du vendeur connecté
+// Intelligence client : valeur moyenne, nouveaux, récurrents, top clients
+const getSellerCustomerAnalytics = catchAsync(async (req, res, next) => {
+  const seller = req.seller; // ✅ Utilisation exclusive de req.seller._id
+
+  // ✅ Refuser toute tentative d'utiliser sellerId provenant de req.body, req.params ou req.query
+  if (
+    req.body?.sellerId !== undefined ||
+    req.query?.sellerId !== undefined ||
+    (req.params && req.params.sellerId !== undefined)
+  ) {
+    throw new AppError('Le sellerId fourni par le client est interdit.', 400);
+  }
+
+  // ✅ Récupérer les IDs des produits du vendeur
+  const sellerProducts = await Product.find({ sellerId: seller._id }).select('_id');
+  const sellerProductIds = sellerProducts.map(p => p._id);
+  const sellerProductIdSet = new Set(sellerProductIds.map(id => id.toString()));
+
+  // ✅ Récupérer les commandes non annulées des clients connectés
+  const orders = await Order.find({
+    'items.productId': { $in: sellerProductIds },
+    orderStatus: { $ne: 'cancelled' },
+    userId: { $ne: null }
+  }).select('userId items createdAt');
+
+  // ✅ Agréger les clients uniques
+  const customerMap = new Map();
+
+  orders.forEach(order => {
+    if (!order.userId) return;
+    const userId = order.userId.toString();
+
+    const sellerItems = order.items.filter(item =>
+      item.productId && sellerProductIdSet.has(item.productId.toString())
+    );
+    if (sellerItems.length === 0) return;
+
+    const orderSpent = sellerItems.reduce(
+      (sum, item) => sum + (item.price * item.quantity),
+      0
+    );
+
+    const existing = customerMap.get(userId) || {
+      userId: order.userId,
+      orders: 0,
+      totalSpent: 0,
+      firstOrderDate: order.createdAt
+    };
+
+    existing.orders += 1;
+    existing.totalSpent += orderSpent;
+    if (order.createdAt < existing.firstOrderDate) {
+      existing.firstOrderDate = order.createdAt;
+    }
+
+    customerMap.set(userId, existing);
+  });
+
+  const customers = Array.from(customerMap.values());
+
+  // ✅ totalCustomers : nombre total de clients uniques
+  const totalCustomers = customers.length;
+
+  // ✅ newCustomers : première commande dans les 30 derniers jours
+  const thirtyDaysAgo = new Date();
+  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+  const newCustomers = customers.filter(c => c.firstOrderDate >= thirtyDaysAgo).length;
+
+  // ✅ returningCustomers : au moins 2 commandes
+  const returningCustomers = customers.filter(c => c.orders >= 2).length;
+
+  // ✅ averageCustomerValue : dépense moyenne par client
+  const totalSpentAll = customers.reduce((sum, c) => sum + c.totalSpent, 0);
+  const averageCustomerValue = totalCustomers > 0 ? totalSpentAll / totalCustomers : 0;
+
+  // ✅ topCustomers : triés par dépense décroissante (max 10)
+  const topCustomers = [...customers]
+    .sort((a, b) => b.totalSpent - a.totalSpent)
+    .slice(0, 10);
+
+  // ✅ Récupérer name et email des clients
+  const topUserIds = topCustomers.map(c => c.userId);
+  const users = await User.find({ _id: { $in: topUserIds } }).select('name email');
+  const userMap = new Map(users.map(u => [u._id.toString(), u]));
+
+  const topCustomersList = topCustomers.map(customer => {
+    const user = userMap.get(customer.userId.toString());
+    return {
+      userId: customer.userId,
+      name: user ? user.name : 'Compte supprimé',
+      email: user ? user.email : null,
+      orders: customer.orders,
+      totalSpent: Number(customer.totalSpent.toFixed(2))
+    };
+  });
+
+  res.status(200).json({
+    success: true,
+    customers: {
+      totalCustomers,
+      newCustomers,
+      returningCustomers,
+      averageCustomerValue: Number(averageCustomerValue.toFixed(2)),
+      topCustomers: topCustomersList
+    }
+  });
+});
+
+// PHASE 13.19 — Recommandations IA avancées (V2) du vendeur connecté
+// Recommandations catégorisées : SALES, INVENTORY, PRODUCTS, CUSTOMERS, MARKETING
+const getSellerAIRecommendationsV2 = catchAsync(async (req, res, next) => {
+  const seller = req.seller; // ✅ Utilisation exclusive de req.seller._id
+
+  // ✅ Refuser toute tentative d'utiliser sellerId provenant de req.body, req.params ou req.query
+  if (
+    req.body?.sellerId !== undefined ||
+    req.query?.sellerId !== undefined ||
+    (req.params && req.params.sellerId !== undefined)
+  ) {
+    throw new AppError('Le sellerId fourni par le client est interdit.', 400);
+  }
+
+  // ✅ Récupérer les produits du vendeur
+  const products = await Product.find({ sellerId: seller._id })
+    .select('name price stock approvalStatus isPublished rating numReviews');
+
+  const sellerProductIds = products.map(p => p._id);
+  const sellerProductIdSet = new Set(sellerProductIds.map(id => id.toString()));
+
+  // ✅ Récupérer toutes les commandes (y compris annulées pour les taux)
+  const allOrders = await Order.find({
+    'items.productId': { $in: sellerProductIds }
+  }).select('userId items orderStatus createdAt');
+
+  const validOrders = allOrders.filter(o => o.orderStatus !== 'cancelled');
+
+  // ✅ Helpers
+  const computeRevenue = (orderList) => orderList.reduce((sum, order) => {
+    const sellerItems = order.items.filter(item =>
+      item.productId && sellerProductIdSet.has(item.productId.toString())
+    );
+    return sum + sellerItems.reduce((itemSum, item) => itemSum + (item.price * item.quantity), 0);
+  }, 0);
+
+  const computeCustomers = (orderList) => {
+    const set = new Set();
+    orderList.forEach(o => { if (o.userId) set.add(o.userId.toString()); });
+    return set.size;
+  };
+
+  const growthRate = (current, previous) => {
+    if (!previous || previous === 0) return current === 0 ? 0 : 100;
+    return ((current - previous) / previous) * 100;
+  };
+
+  // ✅ Agréger les ventes par produit
+  const salesMap = new Map();
+  validOrders.forEach(order => {
+    order.items.forEach(item => {
+      if (!item.productId || !sellerProductIdSet.has(item.productId.toString())) return;
+      const prodId = item.productId.toString();
+      const current = salesMap.get(prodId) || { productId: item.productId, quantitySold: 0, revenue: 0 };
+      current.quantitySold += item.quantity;
+      current.revenue += item.price * item.quantity;
+      salesMap.set(prodId, current);
+    });
+  });
+
+  const productMap = new Map(products.map(p => [p._id.toString(), p]));
+
+  // ✅ Comparaison 30 jours vs 30 jours précédents
+  const now = new Date();
+  const startCurrent = new Date(now);
+  startCurrent.setHours(0, 0, 0, 0);
+  startCurrent.setDate(startCurrent.getDate() - 29);
+  const startPrevious = new Date(startCurrent);
+  startPrevious.setDate(startPrevious.getDate() - 30);
+
+  const currentOrders = validOrders.filter(o => o.createdAt >= startCurrent);
+  const previousOrders = validOrders.filter(o => o.createdAt >= startPrevious && o.createdAt < startCurrent);
+
+  const currentRevenue = computeRevenue(currentOrders);
+  const previousRevenue = computeRevenue(previousOrders);
+  const revenueGrowth = growthRate(currentRevenue, previousRevenue);
+
+  const currentCustomers = computeCustomers(currentOrders);
+  const previousCustomers = computeCustomers(previousOrders);
+  const customerGrowth = growthRate(currentCustomers, previousCustomers);
+
+  const recommendations = [];
+  const lowStockThreshold = 5;
+
+  // ✅ 1) SALES — Baisse / croissance des ventes
+  if (revenueGrowth < -10) {
+    recommendations.push({
+      category: 'SALES',
+      priority: 'HIGH',
+      title: 'Sales slowdown detected',
+      action: 'Create promotion',
+      expectedImpact: 'Increase conversion'
+    });
+  } else if (revenueGrowth > 15) {
+    recommendations.push({
+      category: 'SALES',
+      priority: 'MEDIUM',
+      title: 'Strong sales momentum',
+      action: 'Scale up best-selling categories',
+      expectedImpact: 'Maximize revenue growth'
+    });
+  } else if (validOrders.length === 0) {
+    recommendations.push({
+      category: 'SALES',
+      priority: 'HIGH',
+      title: 'No sales yet',
+      action: 'Launch your first promotion and share your store',
+      expectedImpact: 'Generate first orders'
+    });
+  }
+
+  // ✅ 2) INVENTORY — Risque de stock
+  const outOfStockProducts = products.filter(p => p.stock === 0);
+  const lowStockProducts = products.filter(p => p.stock > 0 && p.stock <= lowStockThreshold);
+
+  outOfStockProducts.forEach(product => {
+    recommendations.push({
+      category: 'INVENTORY',
+      priority: 'HIGH',
+      title: 'Stock risk detected',
+      action: `Restock ${product.name}`,
+      expectedImpact: 'Avoid lost sales'
+    });
+  });
+
+  lowStockProducts.forEach(product => {
+    const sale = salesMap.get(product._id.toString());
+    const quantitySold = sale ? sale.quantitySold : 0;
+    if (quantitySold > 0) {
+      recommendations.push({
+        category: 'INVENTORY',
+        priority: 'MEDIUM',
+        title: 'Low stock warning',
+        action: `Restock ${product.name}`,
+        expectedImpact: 'Avoid stockout for a fast-moving item'
+      });
+    }
+  });
+
+  if (outOfStockProducts.length === 0 && lowStockProducts.length === 0) {
+    recommendations.push({
+      category: 'INVENTORY',
+      priority: 'LOW',
+      title: 'Healthy inventory',
+      action: 'Maintain current stock levels',
+      expectedImpact: 'Stable fulfillment'
+    });
+  }
+
+  // ✅ 3) PRODUCTS — Produits sans vente / faibles avis / en attente
+  const neverSoldPublished = products.filter(p => {
+    const sale = salesMap.get(p._id.toString());
+    return p.isPublished && (!sale || sale.quantitySold === 0);
+  });
+
+  if (neverSoldPublished.length > 0) {
+    recommendations.push({
+      category: 'PRODUCTS',
+      priority: 'MEDIUM',
+      title: `${neverSoldPublished.length} product(s) without sales`,
+      action: 'Improve descriptions, images or pricing',
+      expectedImpact: 'Boost product conversion'
+    });
+  }
+
+  const lowRatedProducts = products.filter(p => p.numReviews > 0 && p.rating < 3.5);
+  if (lowRatedProducts.length > 0) {
+    recommendations.push({
+      category: 'PRODUCTS',
+      priority: 'HIGH',
+      title: 'Quality improvement needed',
+      action: `Address feedback on ${lowRatedProducts.length} low-rated product(s)`,
+      expectedImpact: 'Improve ratings and trust'
+    });
+  }
+
+  const pendingCount = products.filter(p => p.approvalStatus === 'pending').length;
+  if (pendingCount > 0) {
+    recommendations.push({
+      category: 'PRODUCTS',
+      priority: 'MEDIUM',
+      title: `${pendingCount} product(s) pending approval`,
+      action: 'Follow up on admin approval',
+      expectedImpact: 'Increase available catalog'
+    });
+  }
+
+  // ✅ 4) CUSTOMERS — Croissance / baisse / récurrence
+  if (customerGrowth > 15) {
+    recommendations.push({
+      category: 'CUSTOMERS',
+      priority: 'MEDIUM',
+      title: 'Customer acquisition rising',
+      action: 'Launch a loyalty program',
+      expectedImpact: 'Convert new buyers into repeat customers'
+    });
+  } else if (customerGrowth < -10 && currentCustomers > 0) {
+    recommendations.push({
+      category: 'CUSTOMERS',
+      priority: 'HIGH',
+      title: 'Customer base shrinking',
+      action: 'Re-engage past customers with email offers',
+      expectedImpact: 'Reverse customer decline'
+    });
+  }
+
+  const repeatCustomers = new Set();
+  const firstOrders = new Map();
+  validOrders.forEach(o => {
+    if (!o.userId) return;
+    const uid = o.userId.toString();
+    if (firstOrders.has(uid)) {
+      repeatCustomers.add(uid);
+    } else {
+      firstOrders.set(uid, true);
+    }
+  });
+
+  if (repeatCustomers.size === 0 && validOrders.length > 0) {
+    recommendations.push({
+      category: 'CUSTOMERS',
+      priority: 'MEDIUM',
+      title: 'No repeat customers yet',
+      action: 'Offer discounts on second purchases',
+      expectedImpact: 'Build customer loyalty'
+    });
+  }
+
+  // ✅ 5) MARKETING — Meilleur produit / avis positifs
+  let bestSeller = null;
+  let bestQty = 0;
+  salesMap.forEach((sale, prodId) => {
+    if (sale.quantitySold > bestQty) {
+      bestQty = sale.quantitySold;
+      bestSeller = productMap.get(prodId);
+    }
+  });
+
+  if (bestSeller) {
+    recommendations.push({
+      category: 'MARKETING',
+      priority: 'HIGH',
+      title: `Promote best-seller: ${bestSeller.name}`,
+      action: 'Feature it in storefront banners and ads',
+      expectedImpact: 'Multiply sales of a proven product'
+    });
+  }
+
+  const excellentRated = products.filter(p => p.numReviews > 0 && p.rating >= 4.5);
+  if (excellentRated.length > 0) {
+    recommendations.push({
+      category: 'MARKETING',
+      priority: 'MEDIUM',
+      title: 'Leverage social proof',
+      action: 'Highlight top-rated products in campaigns',
+      expectedImpact: 'Increase conversion through trust'
+    });
+  }
+
+  // ✅ Trier par priorité (HIGH > MEDIUM > LOW), puis par catégorie
+  const priorityOrder = { HIGH: 0, MEDIUM: 1, LOW: 2 };
+  recommendations.sort((a, b) => {
+    const priorityDiff = priorityOrder[a.priority] - priorityOrder[b.priority];
+    if (priorityDiff !== 0) return priorityDiff;
+    return a.category.localeCompare(b.category);
+  });
+
+  res.status(200).json({
+    success: true,
+    count: recommendations.length,
+    recommendations
+  });
+});
+
 module.exports = {
+  getSellerAdvancedAnalytics,
+  getSellerSalesTrends,
+  getSellerCustomerAnalytics,
+  getSellerAIRecommendationsV2,
   getSellerNotifications,
   markSellerNotificationsRead,
   getSellerBusinessAlerts,

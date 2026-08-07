@@ -42,7 +42,11 @@ const {
   getSellerAIReport,
   getSellerNotifications,
   markSellerNotificationsRead,
-  getSellerBusinessAlerts
+  getSellerBusinessAlerts,
+  getSellerAdvancedAnalytics,
+  getSellerSalesTrends,
+  getSellerCustomerAnalytics,
+  getSellerAIRecommendationsV2
 } = require('../controllers/sellerController');
 
 
@@ -232,6 +236,46 @@ router.get(
   restrictTo('seller'),
   isApprovedSeller,
   getSellerBusinessAlerts
+);
+
+// PHASE 13.19 — Analytics avancés du vendeur connecté
+// Placée AVANT la route publique /:id pour éviter le shadowing
+router.get(
+  '/advanced-analytics',
+  protect,
+  restrictTo('seller'),
+  isApprovedSeller,
+  getSellerAdvancedAnalytics
+);
+
+// PHASE 13.19 — Tendances des ventes du vendeur connecté
+// Placée AVANT la route publique /:id pour éviter le shadowing
+router.get(
+  '/sales-trends',
+  protect,
+  restrictTo('seller'),
+  isApprovedSeller,
+  getSellerSalesTrends
+);
+
+// PHASE 13.19 — Analytics clients avancés du vendeur connecté
+// Placée AVANT la route publique /:id pour éviter le shadowing
+router.get(
+  '/customer-analytics',
+  protect,
+  restrictTo('seller'),
+  isApprovedSeller,
+  getSellerCustomerAnalytics
+);
+
+// PHASE 13.19 — Recommandations IA avancées (V2) du vendeur connecté
+// Placée AVANT la route publique /:id pour éviter le shadowing
+router.get(
+  '/ai-recommendations-v2',
+  protect,
+  restrictTo('seller'),
+  isApprovedSeller,
+  getSellerAIRecommendationsV2
 );
 
 
