@@ -43,10 +43,14 @@ const {
   getSellerNotifications,
   markSellerNotificationsRead,
   getSellerBusinessAlerts,
-  getSellerAdvancedAnalytics,
+getSellerAdvancedAnalytics,
   getSellerSalesTrends,
   getSellerCustomerAnalytics,
-  getSellerAIRecommendationsV2
+  getSellerAIRecommendationsV2,
+  getSellerGrowthEngine,
+  getSellerSmartCampaigns,
+  getSellerProductOptimizer,
+  getSellerAutomationCenter
 } = require('../controllers/sellerController');
 
 
@@ -276,6 +280,46 @@ router.get(
   restrictTo('seller'),
   isApprovedSeller,
   getSellerAIRecommendationsV2
+);
+
+// PHASE 13.20 — Moteur intelligent de croissance du vendeur connecté
+// Placée AVANT la route publique /:id pour éviter le shadowing
+router.get(
+  '/growth-engine',
+  protect,
+  restrictTo('seller'),
+  isApprovedSeller,
+  getSellerGrowthEngine
+);
+
+// PHASE 13.20 — Campagnes marketing intelligentes du vendeur connecté
+// Placée AVANT la route publique /:id pour éviter le shadowing
+router.get(
+  '/smart-campaigns',
+  protect,
+  restrictTo('seller'),
+  isApprovedSeller,
+  getSellerSmartCampaigns
+);
+
+// PHASE 13.20 — Optimiseur de produits du vendeur connecté
+// Placée AVANT la route publique /:id pour éviter le shadowing
+router.get(
+  '/product-optimizer',
+  protect,
+  restrictTo('seller'),
+  isApprovedSeller,
+  getSellerProductOptimizer
+);
+
+// PHASE 13.20 — Centre d'automatisation du vendeur connecté
+// Placée AVANT la route publique /:id pour éviter le shadowing
+router.get(
+  '/automation-center',
+  protect,
+  restrictTo('seller'),
+  isApprovedSeller,
+  getSellerAutomationCenter
 );
 
 
