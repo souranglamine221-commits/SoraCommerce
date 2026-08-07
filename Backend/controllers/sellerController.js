@@ -1705,7 +1705,406 @@ const getSellerDashboardSummary = catchAsync(async (req, res, next) => {
   });
 });
 
+// PHASE 13.16 — KPIs du vendeur connecté
+// Indicateurs clés de performance centralisés
+const getSellerKPIDashboard = catchAsync(async (req, res, next) => {
+  const seller = req.seller; // ✅ Utilisation exclusive de req.seller._id
+
+  // ✅ Refuser toute tentative d'utiliser sellerId provenant de req.body, req.params ou req.query
+  if (
+    req.body?.sellerId !== undefined ||
+    req.query?.sellerId !== undefined ||
+    (req.params && req.params.sellerId !== undefined)
+  ) {
+    throw new AppError('Le sellerId fourni par le client est interdit.', 400);
+  }
+
+  // ✅ Récupérer les IDs des produits du vendeur
+  const sellerProducts = await Product.find({ sellerId: seller._id }).select('_id');
+  const sellerProductIds = sellerProducts.map(p => p._id);
+  const sellerProductIdSet = new Set(sellerProductIds.map(id => id.toString()));
+
+  // ✅ Récupérer toutes les commandes (y compris annulées pour le taux d'annulation)
+  const allOrders = await Order.find({
+    'items.productId': { $in: sellerProductIds }
+  });
+
+  // ✅ Commandes non annulées pour les revenus
+  const validOrders = allOrders.filter(o => o.orderStatus !== 'cancelled');
+
+  // ✅ Calcul des revenus
+  const totalRevenue = validOrders.reduce((sum, order) => {
+    const sellerItems = order.items.filter(item =>
+      item.productId && sellerProductIdSet.has(item.productId.toString())
+    );
+    return sum + sellerItems.reduce((itemSum, item) => itemSum + (item.price * item.quantity), 0);
+  }, 0);
+
+  const totalOrders = validOrders.length;
+  const averageOrderValue = totalOrders > 0 ? totalRevenue / totalOrders : 0;
+
+  // ✅ Métriques 30 derniers jours
+  const thirtyDaysAgo = new Date();
+  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+  const recentOrders = validOrders.filter(o => o.createdAt >= thirtyDaysAgo);
+  const recentRevenue = recentOrders.reduce((sum, order) => {
+    const sellerItems = order.items.filter(item =>
+      item.productId && sellerProductIdSet.has(item.productId.toString())
+    );
+    return sum + sellerItems.reduce((itemSum, item) => itemSum + (item.price * item.quantity), 0);
+  }, 0);
+
+  // ✅ Clients uniques
+  const customerSet = new Set();
+  validOrders.forEach(order => {
+    if (order.userId) customerSet.add(order.userId.toString());
+  });
+  const totalCustomers = customerSet.size;
+
+  // ✅ Taux de livraison et d'annulation (sur les commandes résolues)
+  const completedOrders = allOrders.filter(o => o.orderStatus === 'delivered').length;
+  const cancelledOrders = allOrders.filter(o => o.orderStatus === 'cancelled').length;
+  const resolvedOrders = completedOrders + cancelledOrders;
+
+  let deliveryRate = 0;
+  let cancellationRate = 0;
+  if (resolvedOrders > 0) {
+    deliveryRate = (completedOrders / resolvedOrders) * 100;
+    cancellationRate = (cancelledOrders / resolvedOrders) * 100;
+  }
+
+  // ✅ Produits (total, actifs, en attente, rupture)
+  const totalProducts = sellerProducts.length;
+  const activeProducts = sellerProducts.filter(p => p.stock > 0).length;
+  const products = await Product.find({ sellerId: seller._id }).select('stock approvalStatus');
+  const pendingProducts = products.filter(p => p.approvalStatus === 'pending').length;
+  const outOfStockProducts = products.filter(p => p.stock === 0).length;
+
+  res.status(200).json({
+    success: true,
+    kpis: {
+      revenue: {
+        total: Number(totalRevenue.toFixed(2)),
+        last30Days: Number(recentRevenue.toFixed(2)),
+        averageOrderValue: Number(averageOrderValue.toFixed(2))
+      },
+      orders: {
+        total: totalOrders,
+        last30Days: recentOrders.length,
+        completed: completedOrders,
+        cancelled: cancelledOrders
+      },
+      customers: {
+        total: totalCustomers
+      },
+      products: {
+        total: totalProducts,
+        active: activeProducts,
+        pending: pendingProducts,
+        outOfStock: outOfStockProducts
+      },
+      rates: {
+        deliveryRate: Number(deliveryRate.toFixed(2)),
+        cancellationRate: Number(cancellationRate.toFixed(2))
+      },
+      rating: seller.rating,
+      totalReviews: seller.totalReviews
+    }
+  });
+});
+
+// PHASE 13.16 — Prévision des ventes du vendeur connecté
+// Projection sur 30 jours basée sur l'historique (moyennes mobiles et tendance)
+const getSellerSalesForecast = catchAsync(async (req, res, next) => {
+  const seller = req.seller; // ✅ Utilisation exclusive de req.seller._id
+
+  // ✅ Refuser toute tentative d'utiliser sellerId provenant de req.body, req.params ou req.query
+  if (
+    req.body?.sellerId !== undefined ||
+    req.query?.sellerId !== undefined ||
+    (req.params && req.params.sellerId !== undefined)
+  ) {
+    throw new AppError('Le sellerId fourni par le client est interdit.', 400);
+  }
+
+  // ✅ Récupérer les IDs des produits du vendeur
+  const sellerProducts = await Product.find({ sellerId: seller._id }).select('_id');
+  const sellerProductIds = sellerProducts.map(p => p._id);
+  const sellerProductIdSet = new Set(sellerProductIds.map(id => id.toString()));
+
+  // ✅ Récupérer les commandes non annulées des 90 derniers jours
+  const ninetyDaysAgo = new Date();
+  ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
+
+  const orders = await Order.find({
+    'items.productId': { $in: sellerProductIds },
+    orderStatus: { $ne: 'cancelled' },
+    createdAt: { $gte: ninetyDaysAgo }
+  }).select('items createdAt');
+
+  // ✅ Fonction : revenu d'une liste de commandes
+  const computeRevenue = (orderList) => {
+    return orderList.reduce((sum, order) => {
+      const sellerItems = order.items.filter(item =>
+        item.productId && sellerProductIdSet.has(item.productId.toString())
+      );
+      return sum + sellerItems.reduce((itemSum, item) => itemSum + (item.price * item.quantity), 0);
+    }, 0);
+  };
+
+  // ✅ Découpage par périodes de 30 jours (sur 90 jours d'historique)
+  const now = new Date();
+
+  // Période la plus récente (jours 60-90)
+  const recentStart = new Date(now);
+  recentStart.setDate(recentStart.getDate() - 90);
+  const recentEnd = new Date(now);
+  recentEnd.setDate(recentEnd.getDate() - 60);
+
+  // Période intermédiaire (jours 30-60)
+  const midStart = new Date(now);
+  midStart.setDate(midStart.getDate() - 60);
+  const midEnd = new Date(now);
+  midEnd.setDate(midEnd.getDate() - 30);
+
+  // Période la plus ancienne (jours 0-30)
+  const oldStart = new Date(now);
+  oldStart.setDate(oldStart.getDate() - 30);
+
+  const oldPeriodOrders = orders.filter(o => o.createdAt >= midEnd && o.createdAt < oldStart);
+  const midPeriodOrders = orders.filter(o => o.createdAt >= midStart && o.createdAt < midEnd);
+  const recentPeriodOrders = orders.filter(o => o.createdAt >= recentStart && o.createdAt < recentEnd);
+
+  const oldRevenue = computeRevenue(oldPeriodOrders);
+  const midRevenue = computeRevenue(midPeriodOrders);
+  const recentRevenue = computeRevenue(recentPeriodOrders);
+
+  // ✅ Moyenne mobile pondérée (pondération plus forte sur les périodes récentes)
+  const totalWeight = 1 + 2 + 3;
+  const weightedDailyAverage = (oldRevenue * 1 + midRevenue * 2 + recentRevenue * 3) / totalWeight / 30;
+
+  // ✅ Tendance de croissance entre les périodes
+  let growthRate = 0;
+  if (oldRevenue > 0) {
+    growthRate = ((recentRevenue - oldRevenue) / oldRevenue) * 100;
+  } else if (recentRevenue > 0) {
+    growthRate = 100;
+  }
+
+  // ✅ Projection sur 30 jours (moyenne pondérée + tendance plafonnée à ±50%)
+  const cappedGrowth = Math.max(-50, Math.min(50, growthRate));
+  const forecastDaily = weightedDailyAverage * (1 + cappedGrowth / 100);
+  const forecastRevenue = Math.max(0, forecastDaily * 30);
+
+  // ✅ Projections mensuelles (3 prochains mois)
+  const monthlyProjection = [];
+  let runningRate = cappedGrowth;
+  for (let i = 1; i <= 3; i++) {
+    const projectedDaily = weightedDailyAverage * Math.pow(1 + runningRate / 100, i);
+    const projectedRevenue = Math.max(0, projectedDaily * 30);
+    const month = new Date(now);
+    month.setDate(1);
+    month.setMonth(month.getMonth() + i);
+    monthlyProjection.push({
+      month: month.toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' }),
+      projectedRevenue: Number(projectedRevenue.toFixed(2))
+    });
+  }
+
+  res.status(200).json({
+    success: true,
+    forecast: {
+      basis: {
+        old30Days: Number(oldRevenue.toFixed(2)),
+        mid30Days: Number(midRevenue.toFixed(2)),
+        recent30Days: Number(recentRevenue.toFixed(2))
+      },
+      growthRate: Number(cappedGrowth.toFixed(2)),
+      dailyAverage: Number(weightedDailyAverage.toFixed(2)),
+      next30Days: {
+        projectedRevenue: Number(forecastRevenue.toFixed(2)),
+        projectedOrders: Math.round(forecastRevenue / (averageOrderValue(recentPeriodOrders, sellerProductIdSet) || forecastRevenue)),
+        projectedProductsSold: Math.round(forecastDaily * 30 / (averagePricePerItem(recentPeriodOrders, sellerProductIdSet) || 1))
+      },
+      monthlyProjection
+    }
+  });
+});
+
+// ✅ Helper : valeur moyenne de commande d'une liste de commandes
+function averageOrderValue(orderList, sellerProductIdSet) {
+  if (orderList.length === 0) return 0;
+  const revenue = orderList.reduce((sum, order) => {
+    const sellerItems = order.items.filter(item =>
+      item.productId && sellerProductIdSet.has(item.productId.toString())
+    );
+    return sum + sellerItems.reduce((itemSum, item) => itemSum + (item.price * item.quantity), 0);
+  }, 0);
+  return revenue / orderList.length;
+}
+
+// ✅ Helper : prix moyen par article d'une liste de commandes
+function averagePricePerItem(orderList, sellerProductIdSet) {
+  if (orderList.length === 0) return 0;
+  let totalItems = 0;
+  let totalValue = 0;
+  orderList.forEach(order => {
+    order.items.forEach(item => {
+      if (item.productId && sellerProductIdSet.has(item.productId.toString())) {
+        totalItems += item.quantity;
+        totalValue += item.price * item.quantity;
+      }
+    });
+  });
+  return totalItems > 0 ? totalValue / totalItems : 0;
+}
+
+// PHASE 13.16 — Recommandations business du vendeur connecté
+// Conseils basés sur les données de performance, stock et avis
+const getSellerBusinessRecommendations = catchAsync(async (req, res, next) => {
+  const seller = req.seller; // ✅ Utilisation exclusive de req.seller._id
+
+  // ✅ Refuser toute tentative d'utiliser sellerId provenant de req.body, req.params ou req.query
+  if (
+    req.body?.sellerId !== undefined ||
+    req.query?.sellerId !== undefined ||
+    (req.params && req.params.sellerId !== undefined)
+  ) {
+    throw new AppError('Le sellerId fourni par le client est interdit.', 400);
+  }
+
+  // ✅ Récupérer les produits du vendeur (avec stock, approbation, avis)
+  const products = await Product.find({ sellerId: seller._id })
+    .select('name price stock approvalStatus isPublished rating numReviews images');
+
+  const sellerProductIds = products.map(p => p._id);
+  const sellerProductIdSet = new Set(sellerProductIds.map(id => id.toString()));
+
+  // ✅ Récupérer les commandes non annulées
+  const orders = await Order.find({
+    'items.productId': { $in: sellerProductIds },
+    orderStatus: { $ne: 'cancelled' }
+  }).select('items createdAt');
+
+  // ✅ Agréger les ventes par produit
+  const salesMap = new Map();
+  orders.forEach(order => {
+    order.items.forEach(item => {
+      if (!item.productId || !sellerProductIdSet.has(item.productId.toString())) return;
+      const prodId = item.productId.toString();
+      const current = salesMap.get(prodId) || { productId: item.productId, quantitySold: 0, revenue: 0 };
+      current.quantitySold += item.quantity;
+      current.revenue += item.price * item.quantity;
+      salesMap.set(prodId, current);
+    });
+  });
+
+  const productMap = new Map(products.map(p => [p._id.toString(), p]));
+  const recommendations = [];
+
+  // ✅ 1) Recommandations de stock
+  const lowStockThreshold = 5;
+  products.forEach(product => {
+    const sale = salesMap.get(product._id.toString());
+    const quantitySold = sale ? sale.quantitySold : 0;
+
+    if (product.stock === 0) {
+      recommendations.push({
+        type: 'stock',
+        priority: 'high',
+        title: `Réapprovisionnez « ${product.name} »`,
+        description: 'Ce produit est en rupture de stock. Réapprovisionnez-le pour éviter de perdre des ventes.',
+        productId: product._id
+      });
+    } else if (product.stock <= lowStockThreshold && quantitySold > 0) {
+      recommendations.push({
+        type: 'stock',
+        priority: 'medium',
+        title: `Stock faible pour « ${product.name} »`,
+        description: `Il reste ${product.stock} unités et ce produit se vend régulièrement. Pensez à vous réapprovisionner.`,
+        productId: product._id
+      });
+    }
+  });
+
+  // ✅ 2) Recommandations produits non performants
+  products.forEach(product => {
+    const sale = salesMap.get(product._id.toString());
+    const quantitySold = sale ? sale.quantitySold : 0;
+
+    if (quantitySold === 0 && product.isPublished) {
+      recommendations.push({
+        type: 'product',
+        priority: 'low',
+        title: `« ${product.name} » n'a pas encore été vendu`,
+        description: 'Améliorez la description, les images ou le prix de ce produit pour stimuler ses ventes.',
+        productId: product._id
+      });
+    }
+  });
+
+  // ✅ 3) Recommandation produits en attente
+  const pendingCount = products.filter(p => p.approvalStatus === 'pending').length;
+  if (pendingCount > 0) {
+    recommendations.push({
+      type: 'approval',
+      priority: 'medium',
+      title: `${pendingCount} produit(s) en attente d'approbation`,
+      description: 'Vos produits en attente seront publiés dès validation par l\'administrateur. Suivez leur statut régulièrement.'
+    });
+  }
+
+  // ✅ 4) Recommandation basée sur les avis
+  const lowRatedProducts = products.filter(p => p.numReviews > 0 && p.rating < 3.5);
+  if (lowRatedProducts.length > 0) {
+    recommendations.push({
+      type: 'quality',
+      priority: 'high',
+      title: 'Améliorez la qualité de certains produits',
+      description: `${lowRatedProducts.length} produit(s) ont une note inférieure à 3.5/5. Analysez les avis clients pour améliorer la qualité.`
+    });
+  }
+
+  // ✅ 5) Recommandation générale de performance
+  const totalRevenue = orders.reduce((sum, order) => {
+    const sellerItems = order.items.filter(item =>
+      item.productId && sellerProductIdSet.has(item.productId.toString())
+    );
+    return sum + sellerItems.reduce((itemSum, item) => itemSum + (item.price * item.quantity), 0);
+  }, 0);
+
+  if (totalRevenue > 0) {
+    recommendations.push({
+      type: 'growth',
+      priority: 'low',
+      title: 'Développez votre gamme de produits',
+      description: 'Ajoutez de nouveaux produits dans vos catégories qui performent le mieux pour augmenter vos revenus.'
+    });
+  } else {
+    recommendations.push({
+      type: 'growth',
+      priority: 'high',
+      title: 'Générez votre première vente',
+      description: 'Assurez-vous que vos produits sont approuvés et publiés, puis partagez votre boutique pour attirer vos premiers clients.'
+    });
+  }
+
+  // ✅ Tri par priorité (high > medium > low)
+  const priorityOrder = { high: 0, medium: 1, low: 2 };
+  recommendations.sort((a, b) => priorityOrder[a.priority] - priorityOrder[b.priority]);
+
+  res.status(200).json({
+    success: true,
+    count: recommendations.length,
+    recommendations
+  });
+});
+
 module.exports = {
+  getSellerSalesForecast,
+  getSellerBusinessRecommendations,
+  getSellerKPIDashboard,
   getSellerGrowthAnalytics,
   getSellerProductPerformance,
   getSellerDashboardSummary,

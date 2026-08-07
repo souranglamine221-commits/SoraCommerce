@@ -33,7 +33,10 @@ const {
   getSellerOrderInsights,
   getSellerGrowthAnalytics,
   getSellerProductPerformance,
-  getSellerDashboardSummary
+  getSellerDashboardSummary,
+  getSellerSalesForecast,
+  getSellerBusinessRecommendations,
+  getSellerKPIDashboard
 } = require('../controllers/sellerController');
 
 
@@ -133,6 +136,36 @@ router.get(
   restrictTo('seller'),
   isApprovedSeller,
   getSellerDashboardSummary
+);
+
+// PHASE 13.16 — Prévision des ventes du vendeur connecté
+// Placée AVANT la route publique /:id pour éviter le shadowing
+router.get(
+  '/sales-forecast',
+  protect,
+  restrictTo('seller'),
+  isApprovedSeller,
+  getSellerSalesForecast
+);
+
+// PHASE 13.16 — Recommandations business du vendeur connecté
+// Placée AVANT la route publique /:id pour éviter le shadowing
+router.get(
+  '/business-recommendations',
+  protect,
+  restrictTo('seller'),
+  isApprovedSeller,
+  getSellerBusinessRecommendations
+);
+
+// PHASE 13.16 — KPIs du vendeur connecté
+// Placée AVANT la route publique /:id pour éviter le shadowing
+router.get(
+  '/kpis',
+  protect,
+  restrictTo('seller'),
+  isApprovedSeller,
+  getSellerKPIDashboard
 );
 
 
