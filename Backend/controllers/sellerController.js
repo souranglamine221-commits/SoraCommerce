@@ -2101,7 +2101,576 @@ const getSellerBusinessRecommendations = catchAsync(async (req, res, next) => {
   });
 });
 
+// PHASE 13.17 — Assistant intelligent du vendeur connecté
+// Résumé intelligent du business : summary, healthScore et insights
+const getSellerSmartInsights = catchAsync(async (req, res, next) => {
+  const seller = req.seller; // ✅ Utilisation exclusive de req.seller._id
+
+  // ✅ Refuser toute tentative d'utiliser sellerId provenant de req.body, req.params ou req.query
+  if (
+    req.body?.sellerId !== undefined ||
+    req.query?.sellerId !== undefined ||
+    (req.params && req.params.sellerId !== undefined)
+  ) {
+    throw new AppError('Le sellerId fourni par le client est interdit.', 400);
+  }
+
+  // ✅ Récupérer tous les produits du vendeur (uniquement les champs nécessaires)
+  const products = await Product.find({ sellerId: seller._id }).select('name price stock images image category rating numReviews approvalStatus isPublished');
+
+  const sellerProductIds = products.map(p => p._id);
+  const sellerProductIdSet = new Set(sellerProductIds.map(id => id.toString()));
+
+  // ✅ Récupérer toutes les commandes (y compris annulées pour les taux)
+  const allOrders = await Order.find({
+    'items.productId': { $in: sellerProductIds }
+  }).select('userId items orderStatus createdAt');
+
+  // ✅ Commandes non annulées pour revenus / clients
+  const validOrders = allOrders.filter(o => o.orderStatus !== 'cancelled');
+
+  // ✅ Revenus totaux et clients uniques
+  const customerSet = new Set();
+  let totalRevenue = 0;
+  validOrders.forEach(order => {
+    if (order.userId) customerSet.add(order.userId.toString());
+    const sellerItems = order.items.filter(item =>
+      item.productId && sellerProductIdSet.has(item.productId.toString())
+    );
+    sellerItems.forEach(item => {
+      totalRevenue += item.price * item.quantity;
+    });
+  });
+
+  // ✅ Métriques 30 derniers jours vs 30 jours précédents (croissance revenue)
+  const now = new Date();
+  const startCurrent = new Date(now);
+  startCurrent.setHours(0, 0, 0, 0);
+  startCurrent.setDate(startCurrent.getDate() - 29);
+  const startPrevious = new Date(startCurrent);
+  startPrevious.setDate(startPrevious.getDate() - 30);
+
+  const currentOrders = validOrders.filter(o => o.createdAt >= startCurrent);
+  const previousOrders = validOrders.filter(o => o.createdAt >= startPrevious && o.createdAt < startCurrent);
+
+  const computeRevenue = (orderList) => {
+    return orderList.reduce((sum, order) => {
+      const sellerItems = order.items.filter(item =>
+        item.productId && sellerProductIdSet.has(item.productId.toString())
+      );
+      return sum + sellerItems.reduce((itemSum, item) => itemSum + (item.price * item.quantity), 0);
+    }, 0);
+  };
+
+  const currentRevenue = computeRevenue(currentOrders);
+  const previousRevenue = computeRevenue(previousOrders);
+
+  const growthRate = (current, previous) => {
+    if (!previous || previous === 0) return current === 0 ? 0 : 100;
+    return ((current - previous) / previous) * 100;
+  };
+  const revenueGrowth = growthRate(currentRevenue, previousRevenue);
+
+  // ✅ Taux de livraison (commandes résolues)
+  const deliveredOrders = allOrders.filter(o => o.orderStatus === 'delivered').length;
+  const cancelledOrders = allOrders.filter(o => o.orderStatus === 'cancelled').length;
+  const resolvedOrders = deliveredOrders + cancelledOrders;
+  const deliveryRate = resolvedOrders > 0 ? (deliveredOrders / resolvedOrders) * 100 : 0;
+
+  // ✅ Produits actifs / stock
+  const activeProducts = products.filter(p => p.stock > 0).length;
+  const outOfStock = products.filter(p => p.stock === 0).length;
+  const lowStockThreshold = 5;
+  const lowStock = products.filter(p => p.stock > 0 && p.stock <= lowStockThreshold).length;
+
+  // ✅ summary
+  const summary = {
+    revenue: Number(totalRevenue.toFixed(2)),
+    orders: validOrders.length,
+    customers: customerSet.size,
+    products: products.length
+  };
+
+  // ✅ healthScore (0-100) pondéré
+  let healthScore = 50;
+
+  // Score revenue (0-25)
+  const revenueScore = Math.max(0, Math.min(25, 12.5 + (revenueGrowth / 100) * 12.5));
+
+  // Score commandes (0-20)
+  const orderScore = Math.min(20, validOrders.length * 2);
+
+  // Score livraison (0-25)
+  const deliveryScore = (deliveryRate / 100) * 25;
+
+  // Score produits actifs (0-15)
+  const activeRatio = products.length > 0 ? activeProducts / products.length : 0;
+  const activeScore = activeRatio * 15;
+
+  // Score stock (0-15)
+  const stockIssueRatio = products.length > 0 ? (outOfStock + lowStock) / products.length : 0;
+  const stockScore = (1 - stockIssueRatio) * 15;
+
+healthScore = Math.max(0, Math.min(100, Math.round(
+    revenueScore + orderScore + deliveryScore + activeScore + stockScore
+  )));
+
+  // ✅ insights
+  const insights = [];
+
+  // revenue_growth
+  if (revenueGrowth > 0) {
+    insights.push({
+      type: 'revenue_growth',
+      priority: 'high',
+      title: 'Croissance du chiffre d\'affaires',
+      message: `Vos revenus ont augmenté de ${revenueGrowth.toFixed(1)}% sur les 30 derniers jours.`
+    });
+  }
+
+  // sales_drop
+  if (revenueGrowth < -10) {
+    insights.push({
+      type: 'sales_drop',
+      priority: 'high',
+      title: 'Baisse des ventes',
+      message: `Vos revenus ont chuté de ${Math.abs(revenueGrowth).toFixed(1)}% sur les 30 derniers jours. Analysez vos prix et votre catalogue.`
+    });
+  }
+
+  // inventory_warning
+  if (lowStock + outOfStock > 0) {
+    insights.push({
+      type: 'inventory_warning',
+      priority: lowStock + outOfStock > 3 ? 'high' : 'medium',
+      title: 'Attention au stock',
+      message: `${outOfStock} produit(s) en rupture et ${lowStock} proche(s) de l'épuisement.`
+    });
+  }
+
+  // customer_growth
+  const currentCustomers = new Set();
+  currentOrders.forEach(o => { if (o.userId) currentCustomers.add(o.userId.toString()); });
+  const previousCustomers = new Set();
+  previousOrders.forEach(o => { if (o.userId) previousCustomers.add(o.userId.toString()); });
+  const customerGrowth = growthRate(currentCustomers.size, previousCustomers.size);
+  if (customerGrowth > 0) {
+    insights.push({
+      type: 'customer_growth',
+      priority: 'medium',
+      title: 'Croissance des clients',
+      message: `Votre clientèle a augmenté de ${customerGrowth.toFixed(1)}% récemment.`
+    });
+  }
+
+  // product_success / product_failure
+  const salesMap = new Map();
+  validOrders.forEach(order => {
+    order.items.forEach(item => {
+      if (!item.productId || !sellerProductIdSet.has(item.productId.toString())) return;
+      const prodId = item.productId.toString();
+      const current = salesMap.get(prodId) || { productId: item.productId, quantitySold: 0 };
+      current.quantitySold += item.quantity;
+      salesMap.set(prodId, current);
+    });
+  });
+
+  const productMap = new Map(products.map(p => [p._id.toString(), p]));
+  let bestProduct = null;
+  let bestQty = 0;
+  salesMap.forEach((sale, prodId) => {
+    if (sale.quantitySold > bestQty) {
+      bestQty = sale.quantitySold;
+      bestProduct = productMap.get(prodId);
+    }
+  });
+
+  if (bestProduct) {
+    insights.push({
+      type: 'product_success',
+      priority: 'low',
+      title: `Succès : « ${bestProduct.name} »`,
+      message: `${bestQty} unité(s) vendue(s). Envisagez d'augmenter le stock ou de promouvoir ce produit.`
+    });
+  }
+
+  const failureProducts = products.filter(p => {
+    const sale = salesMap.get(p._id.toString());
+    return p.isPublished && (!sale || sale.quantitySold === 0);
+  });
+  if (failureProducts.length > 0) {
+    insights.push({
+      type: 'product_failure',
+      priority: 'medium',
+      title: `${failureProducts.length} produit(s) sans vente`,
+      message: 'Améliorez la visibilité de vos produits publiés qui n\'ont pas encore été vendus.'
+    });
+  }
+
+  // Tri des insights par priorité
+  const priorityOrder = { high: 0, medium: 1, low: 2 };
+  insights.sort((a, b) => priorityOrder[a.priority] - priorityOrder[b.priority]);
+
+  res.status(200).json({
+    success: true,
+    summary,
+    healthScore,
+    insights
+  });
+});
+
+// PHASE 13.17 — Plan d'action automatique du vendeur connecté
+const getSellerActionPlan = catchAsync(async (req, res, next) => {
+  const seller = req.seller; // ✅ Utilisation exclusive de req.seller._id
+
+  // ✅ Refuser toute tentative d'utiliser sellerId provenant de req.body, req.params ou req.query
+  if (
+    req.body?.sellerId !== undefined ||
+    req.query?.sellerId !== undefined ||
+    (req.params && req.params.sellerId !== undefined)
+  ) {
+    throw new AppError('Le sellerId fourni par le client est interdit.', 400);
+  }
+
+  // ✅ Récupérer les produits du vendeur (stock + infos)
+  const products = await Product.find({ sellerId: seller._id })
+    .select('name price stock approvalStatus isPublished');
+
+  const sellerProductIds = products.map(p => p._id);
+  const sellerProductIdSet = new Set(sellerProductIds.map(id => id.toString()));
+
+  // ✅ Récupérer les commandes non annulées
+  const orders = await Order.find({
+    'items.productId': { $in: sellerProductIds },
+    orderStatus: { $ne: 'cancelled' }
+  }).select('items orderStatus createdAt');
+
+  // ✅ Agréger les ventes par produit
+  const salesMap = new Map();
+  orders.forEach(order => {
+    order.items.forEach(item => {
+      if (!item.productId || !sellerProductIdSet.has(item.productId.toString())) return;
+      const prodId = item.productId.toString();
+      const current = salesMap.get(prodId) || { productId: item.productId, quantitySold: 0, revenue: 0 };
+      current.quantitySold += item.quantity;
+      current.revenue += item.price * item.quantity;
+      salesMap.set(prodId, current);
+    });
+  });
+
+  // ✅ Revenus totaux / commandes
+  const totalRevenue = orders.reduce((sum, order) => {
+    const sellerItems = order.items.filter(item =>
+      item.productId && sellerProductIdSet.has(item.productId.toString())
+    );
+    return sum + sellerItems.reduce((itemSum, item) => itemSum + (item.price * item.quantity), 0);
+  }, 0);
+
+  const productMap = new Map(products.map(p => [p._id.toString(), p]));
+  const lowStockThreshold = 5;
+
+  // ✅ Actions "aujourd'hui" (urgences stock + rupture)
+  const today = [];
+  products.forEach(product => {
+    const sale = salesMap.get(product._id.toString());
+    const quantitySold = sale ? sale.quantitySold : 0;
+
+    if (product.stock === 0) {
+      today.push({
+        action: `Réapprovisionner « ${product.name} »`,
+        priority: 'high',
+        reason: 'Produit en rupture de stock et ventes en cours.'
+      });
+    } else if (product.stock <= lowStockThreshold && quantitySold > 0) {
+      today.push({
+        action: `Réapprovisionner « ${product.name} »`,
+        priority: 'high',
+        reason: `Stock faible (${product.stock} un.) et ventes élevées.`
+      });
+    }
+  });
+
+  // ✅ Actions "cette semaine" (produits non performants + approbation en attente)
+  const thisWeek = [];
+  products.forEach(product => {
+    const sale = salesMap.get(product._id.toString());
+    const quantitySold = sale ? sale.quantitySold : 0;
+
+    if (product.isPublished && quantitySold === 0) {
+      thisWeek.push({
+        action: `Optimiser la fiche de « ${product.name} »`,
+        priority: 'medium',
+        reason: 'Produit publié mais aucune vente enregistrée.'
+      });
+    }
+  });
+
+  const pendingCount = products.filter(p => p.approvalStatus === 'pending').length;
+  if (pendingCount > 0) {
+    thisWeek.push({
+      action: `Suivre l'approbation de ${pendingCount} produit(s)`,
+      priority: 'medium',
+      reason: `${pendingCount} produit(s) en attente de validation administrateur.`
+    });
+  }
+
+  // ✅ Actions "ce mois-ci" (croissance / développement)
+  const thisMonth = [];
+  if (totalRevenue > 0) {
+    thisMonth.push({
+      action: 'Développer votre gamme de produits',
+      priority: 'low',
+      reason: 'Ajoutez de nouveaux produits dans les catégories qui performent le mieux.'
+    });
+  } else {
+    thisMonth.push({
+      action: 'Générer les premières ventes',
+      priority: 'high',
+      reason: 'Aucune vente enregistrée. Publiez vos produits et partagez votre boutique.'
+    });
+  }
+
+  // ✅ Trier chaque liste par priorité
+  const priorityOrder = { high: 0, medium: 1, low: 2 };
+  const sortByPriority = (list) => list.sort((a, b) => priorityOrder[a.priority] - priorityOrder[b.priority]);
+
+  res.status(200).json({
+    success: true,
+    actionPlan: {
+      today: sortByPriority(today),
+      thisWeek: sortByPriority(thisWeek),
+      thisMonth: sortByPriority(thisMonth)
+    }
+  });
+});
+
+// PHASE 13.17 — Rapport IA complet du vendeur connecté
+const getSellerAIReport = catchAsync(async (req, res, next) => {
+  const seller = req.seller; // ✅ Utilisation exclusive de req.seller._id
+
+  // ✅ Refuser toute tentative d'utiliser sellerId provenant de req.body, req.params ou req.query
+  if (
+    req.body?.sellerId !== undefined ||
+    req.query?.sellerId !== undefined ||
+    (req.params && req.params.sellerId !== undefined)
+  ) {
+    throw new AppError('Le sellerId fourni par le client est interdit.', 400);
+  }
+
+  // ✅ Récupérer les produits du vendeur
+  const products = await Product.find({ sellerId: seller._id })
+    .select('name price stock approvalStatus isPublished rating numReviews');
+
+  const sellerProductIds = products.map(p => p._id);
+  const sellerProductIdSet = new Set(sellerProductIds.map(id => id.toString()));
+
+  // ✅ Récupérer toutes les commandes (y compris annulées pour les taux)
+  const allOrders = await Order.find({
+    'items.productId': { $in: sellerProductIds }
+  }).select('userId items orderStatus createdAt');
+
+  const validOrders = allOrders.filter(o => o.orderStatus !== 'cancelled');
+
+  // ✅ Revenus totaux et clients uniques
+  const customerSet = new Set();
+  let totalRevenue = 0;
+  validOrders.forEach(order => {
+    if (order.userId) customerSet.add(order.userId.toString());
+    const sellerItems = order.items.filter(item =>
+      item.productId && sellerProductIdSet.has(item.productId.toString())
+    );
+    sellerItems.forEach(item => {
+      totalRevenue += item.price * item.quantity;
+    });
+  });
+
+  // ✅ Comparaison 30 jours vs 30 jours précédents (tendances)
+  const now = new Date();
+  const startCurrent = new Date(now);
+  startCurrent.setHours(0, 0, 0, 0);
+  startCurrent.setDate(startCurrent.getDate() - 29);
+  const startPrevious = new Date(startCurrent);
+  startPrevious.setDate(startPrevious.getDate() - 30);
+
+  const currentOrders = validOrders.filter(o => o.createdAt >= startCurrent);
+  const previousOrders = validOrders.filter(o => o.createdAt >= startPrevious && o.createdAt < startCurrent);
+
+  const computeRevenue = (orderList) => orderList.reduce((sum, order) => {
+    const sellerItems = order.items.filter(item =>
+      item.productId && sellerProductIdSet.has(item.productId.toString())
+    );
+    return sum + sellerItems.reduce((itemSum, item) => itemSum + (item.price * item.quantity), 0);
+  }, 0);
+
+  const computeCustomers = (orderList) => {
+    const set = new Set();
+    orderList.forEach(o => { if (o.userId) set.add(o.userId.toString()); });
+    return set.size;
+  };
+
+  const currentRevenue = computeRevenue(currentOrders);
+  const previousRevenue = computeRevenue(previousOrders);
+  const currentCustomers = computeCustomers(currentOrders);
+  const previousCustomers = computeCustomers(previousOrders);
+
+  const growthRate = (current, previous) => {
+    if (!previous || previous === 0) return current === 0 ? 0 : 100;
+    return ((current - previous) / previous) * 100;
+  };
+
+  const revenueTrend = growthRate(currentRevenue, previousRevenue);
+  const salesTrend = growthRate(currentOrders.length, previousOrders.length);
+  const customerTrend = growthRate(currentCustomers, previousCustomers);
+
+  // ✅ Taux de livraison
+  const deliveredOrders = allOrders.filter(o => o.orderStatus === 'delivered').length;
+  const cancelledOrders = allOrders.filter(o => o.orderStatus === 'cancelled').length;
+  const resolvedOrders = deliveredOrders + cancelledOrders;
+  const deliveryRate = resolvedOrders > 0 ? (deliveredOrders / resolvedOrders) * 100 : 0;
+
+  // ✅ Agréger les ventes par produit
+  const salesMap = new Map();
+  validOrders.forEach(order => {
+    order.items.forEach(item => {
+      if (!item.productId || !sellerProductIdSet.has(item.productId.toString())) return;
+      const prodId = item.productId.toString();
+      const current = salesMap.get(prodId) || { productId: item.productId, quantitySold: 0, revenue: 0 };
+      current.quantitySold += item.quantity;
+      current.revenue += item.price * item.quantity;
+      salesMap.set(prodId, current);
+    });
+  });
+
+  const productMap = new Map(products.map(p => [p._id.toString(), p]));
+
+  // ✅ performance
+  const performance = {
+    revenueTrend: Number(revenueTrend.toFixed(2)),
+    salesTrend: Number(salesTrend.toFixed(2)),
+    customerTrend: Number(customerTrend.toFixed(2))
+  };
+
+  // ✅ opportunities
+  const opportunities = [];
+  if (revenueTrend > 0) {
+    opportunities.push({
+      title: 'Croissance des revenus',
+      impact: 'high'
+    });
+  }
+  if (customerTrend > 0) {
+    opportunities.push({
+      title: 'Élargir la clientèle existante',
+      impact: 'medium'
+    });
+  }
+  const bestSelling = Array.from(salesMap.values()).sort((a, b) => b.quantitySold - a.quantitySold)[0];
+  if (bestSelling) {
+    const product = productMap.get(bestSelling.productId.toString());
+    if (product) {
+      opportunities.push({
+        title: `Promouvoir « ${product.name} » (best-seller)`,
+        impact: 'high'
+      });
+    }
+  }
+  if (opportunities.length === 0) {
+    opportunities.push({
+      title: 'Lancer de nouveaux produits',
+      impact: 'medium'
+    });
+  }
+
+  // ✅ risks
+  const risks = [];
+  if (revenueTrend < -10) {
+    risks.push({
+      title: 'Baisse significative des revenus',
+      severity: 'high'
+    });
+  }
+  const lowStockThreshold = 5;
+  const outOfStock = products.filter(p => p.stock === 0).length;
+  const lowStock = products.filter(p => p.stock > 0 && p.stock <= lowStockThreshold).length;
+  if (outOfStock + lowStock > 0) {
+    risks.push({
+      title: `${outOfStock + lowStock} produit(s) avec risque de stock`,
+      severity: outOfStock + lowStock > 3 ? 'high' : 'medium'
+    });
+  }
+  if (deliveryRate < 70) {
+    risks.push({
+      title: 'Taux de livraison faible',
+      severity: deliveryRate < 50 ? 'high' : 'medium'
+    });
+  }
+  const lowRated = products.filter(p => p.numReviews > 0 && p.rating < 3.5).length;
+  if (lowRated > 0) {
+    risks.push({
+      title: `${lowRated} produit(s) avec de faibles avis`,
+      severity: 'medium'
+    });
+  }
+  if (risks.length === 0) {
+    risks.push({
+      title: 'Aucun risque majeur détecté',
+      severity: 'low'
+    });
+  }
+
+  // ✅ recommendations
+  const recommendations = [];
+  products.forEach(product => {
+    const sale = salesMap.get(product._id.toString());
+    const quantitySold = sale ? sale.quantitySold : 0;
+    if (product.stock === 0) {
+      recommendations.push({
+        title: `Réapprovisionnez « ${product.name} »`,
+        action: 'Commander de nouvelles unités pour éviter la rupture.'
+      });
+    } else if (product.stock <= lowStockThreshold && quantitySold > 0) {
+      recommendations.push({
+        title: `Augmentez le stock de « ${product.name} »`,
+        action: `Il reste ${product.stock} unités pour un produit qui se vend.`
+      });
+    }
+  });
+
+  if (revenueTrend < 0) {
+    recommendations.push({
+      title: 'Relancez vos ventes',
+      action: 'Proposez des promotions ou améliorez la visibilité de vos produits.'
+    });
+  } else {
+    recommendations.push({
+      title: 'Capitalisez sur votre dynamique',
+      action: 'Ajoutez des produits complémentaires aux plus vendus.'
+    });
+  }
+
+  if (deliveryRate < 70) {
+    recommendations.push({
+      title: 'Améliorez vos délais de livraison',
+      action: 'Optimisez votre traitement des commandes et votre logistique.'
+    });
+  }
+
+  res.status(200).json({
+    success: true,
+    report: {
+      generatedAt: new Date().toISOString(),
+      performance,
+      opportunities,
+      risks,
+      recommendations
+    }
+  });
+});
+
 module.exports = {
+  getSellerSmartInsights,
+  getSellerActionPlan,
+  getSellerAIReport,
   getSellerSalesForecast,
   getSellerBusinessRecommendations,
   getSellerKPIDashboard,

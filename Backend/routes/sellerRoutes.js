@@ -36,7 +36,10 @@ const {
   getSellerDashboardSummary,
   getSellerSalesForecast,
   getSellerBusinessRecommendations,
-  getSellerKPIDashboard
+  getSellerKPIDashboard,
+  getSellerSmartInsights,
+  getSellerActionPlan,
+  getSellerAIReport
 } = require('../controllers/sellerController');
 
 
@@ -166,6 +169,36 @@ router.get(
   restrictTo('seller'),
   isApprovedSeller,
   getSellerKPIDashboard
+);
+
+// PHASE 13.17 — Insights intelligents du vendeur connecté
+// Placée AVANT la route publique /:id pour éviter le shadowing
+router.get(
+  '/smart-insights',
+  protect,
+  restrictTo('seller'),
+  isApprovedSeller,
+  getSellerSmartInsights
+);
+
+// PHASE 13.17 — Plan d'action automatique du vendeur connecté
+// Placée AVANT la route publique /:id pour éviter le shadowing
+router.get(
+  '/action-plan',
+  protect,
+  restrictTo('seller'),
+  isApprovedSeller,
+  getSellerActionPlan
+);
+
+// PHASE 13.17 — Rapport IA complet du vendeur connecté
+// Placée AVANT la route publique /:id pour éviter le shadowing
+router.get(
+  '/ai-report',
+  protect,
+  restrictTo('seller'),
+  isApprovedSeller,
+  getSellerAIReport
 );
 
 
