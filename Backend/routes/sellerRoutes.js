@@ -47,10 +47,15 @@ getSellerAdvancedAnalytics,
   getSellerSalesTrends,
   getSellerCustomerAnalytics,
   getSellerAIRecommendationsV2,
-  getSellerGrowthEngine,
+getSellerGrowthEngine,
   getSellerSmartCampaigns,
   getSellerProductOptimizer,
-  getSellerAutomationCenter
+  getSellerAutomationCenter,
+  getSellerMarketplaceRanking,
+  getSellerCompetitiveBenchmark,
+  getSellerMarketShare,
+  getSellerCompetitiveAdvantages,
+  getSellerTopCompetitors
 } = require('../controllers/sellerController');
 
 
@@ -320,6 +325,56 @@ router.get(
   restrictTo('seller'),
   isApprovedSeller,
   getSellerAutomationCenter
+);
+
+// PHASE 13.21 — Classement du vendeur sur la marketplace
+// Placée AVANT la route publique /:id pour éviter le shadowing
+router.get(
+  '/marketplace-ranking',
+  protect,
+  restrictTo('seller'),
+  isApprovedSeller,
+  getSellerMarketplaceRanking
+);
+
+// PHASE 13.21 — Benchmark concurrentiel des produits du vendeur
+// Placée AVANT la route publique /:id pour éviter le shadowing
+router.get(
+  '/competitive-benchmark',
+  protect,
+  restrictTo('seller'),
+  isApprovedSeller,
+  getSellerCompetitiveBenchmark
+);
+
+// PHASE 13.21 — Part de marché du vendeur
+// Placée AVANT la route publique /:id pour éviter le shadowing
+router.get(
+  '/market-share',
+  protect,
+  restrictTo('seller'),
+  isApprovedSeller,
+  getSellerMarketShare
+);
+
+// PHASE 13.21 — Avantages concurrentiels du vendeur
+// Placée AVANT la route publique /:id pour éviter le shadowing
+router.get(
+  '/competitive-advantages',
+  protect,
+  restrictTo('seller'),
+  isApprovedSeller,
+  getSellerCompetitiveAdvantages
+);
+
+// PHASE 13.21 — Top vendeurs à surveiller
+// Placée AVANT la route publique /:id pour éviter le shadowing
+router.get(
+  '/top-competitors',
+  protect,
+  restrictTo('seller'),
+  isApprovedSeller,
+  getSellerTopCompetitors
 );
 
 

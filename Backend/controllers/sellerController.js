@@ -4424,7 +4424,537 @@ const getSellerAutomationCenter = catchAsync(async (req, res, next) => {
   });
 });
 
+// PHASE 13.21 — Classement du vendeur sur la marketplace
+// Position du vendeur connecté parmi les vendeurs approuvés (revenus, commandes, note, produits)
+const getSellerMarketplaceRanking = catchAsync(async (req, res, next) => {
+  const seller = req.seller; // ✅ Utilisation exclusive de req.seller._id
+
+  // ✅ Refuser toute tentative d'utiliser sellerId provenant de req.body, req.params ou req.query
+  if (
+    req.body?.sellerId !== undefined ||
+    req.query?.sellerId !== undefined ||
+    (req.params && req.params.sellerId !== undefined)
+  ) {
+    throw new AppError('Le sellerId fourni par le client est interdit.', 400);
+  }
+
+  // ✅ Récupérer tous les vendeurs approuvés (hors données privées)
+  const approvedSellers = await Seller.find({ status: 'approved' }).select('_id storeName rating totalReviews');
+
+  const sellerIds = approvedSellers.map(s => s._id);
+  const sellerIdSet = new Set(sellerIds.map(id => id.toString()));
+
+  // ✅ Récupérer tous les produits des vendeurs approuvés (IDs par vendeur)
+  const products = await Product.find({ sellerId: { $in: sellerIds } }).select('sellerId approvalStatus isPublished');
+  const productCountBySeller = new Map();
+  products.forEach(p => {
+    if (!p.sellerId) return;
+    const sid = p.sellerId.toString();
+    productCountBySeller.set(sid, (productCountBySeller.get(sid) || 0) + 1);
+  });
+
+  // ✅ Récupérer les commandes non annulées contenant les produits des vendeurs approuvés
+  const orders = await Order.find({
+    'items.productId': { $in: products.map(p => p._id) },
+    orderStatus: { $ne: 'cancelled' }
+  }).select('items orderStatus');
+
+  // ✅ Agréger revenus et nombre de commandes par vendeur
+  const revenueBySeller = new Map();
+  const orderCountBySeller = new Map();
+  const orderSeen = new Set();
+
+orders.forEach(order => {
+    const seen = orderSeen.has(order._id.toString());
+    order.items.forEach(item => {
+      if (!item.productId) return;
+      const prodId = item.productId.toString();
+      const prod = products.find(p => p._id.toString() === prodId);
+      if (!prod || !prod.sellerId) return;
+      const sid = prod.sellerId.toString();
+      if (!sellerIdSet.has(sid)) return;
+      // Revenue
+      revenueBySeller.set(sid, (revenueBySeller.get(sid) || 0) + (item.price * item.quantity));
+      // Order count (une seule fois par commande et par vendeur)
+      if (!seen) {
+        orderCountBySeller.set(sid, (orderCountBySeller.get(sid) || 0) + 1);
+      }
+    });
+    if (!seen) orderSeen.add(order._id.toString());
+  });
+
+  // ✅ Construire la liste des vendeurs avec leurs métriques
+  const ranking = approvedSellers.map(s => {
+    const sid = s._id.toString();
+    return {
+      sellerId: s._id,
+      storeName: s.storeName,
+      rating: s.rating,
+      totalReviews: s.totalReviews,
+      totalRevenue: revenueBySeller.get(sid) || 0,
+      totalOrders: orderCountBySeller.get(sid) || 0,
+      totalProducts: productCountBySeller.get(sid) || 0
+    };
+  });
+
+  // ✅ Fonction de classement
+  const rankBy = (list, key) => {
+    const sorted = [...list].sort((a, b) => b[key] - a[key]);
+    const positionMap = new Map();
+    sorted.forEach((item, index) => {
+      positionMap.set(item.sellerId.toString(), index + 1);
+    });
+    return positionMap;
+  };
+
+  const revenueRank = rankBy(ranking, 'totalRevenue');
+  const orderRank = rankBy(ranking, 'totalOrders');
+  const ratingRank = rankBy(ranking, 'rating');
+  const productRank = rankBy(ranking, 'totalProducts');
+
+  const myId = seller._id.toString();
+  const myData = ranking.find(r => r.sellerId.toString() === myId) || {
+    sellerId: seller._id,
+    storeName: seller.storeName,
+    rating: seller.rating,
+    totalReviews: seller.totalReviews,
+    totalRevenue: 0,
+    totalOrders: 0,
+    totalProducts: 0
+  };
+
+  const totalSellers = ranking.length;
+
+  res.status(200).json({
+    success: true,
+    totalSellers,
+    ranking: {
+      revenue: {
+        position: revenueRank.get(myId) || totalSellers,
+        total: totalSellers,
+        totalRevenue: Number(myData.totalRevenue.toFixed(2))
+      },
+      orders: {
+        position: orderRank.get(myId) || totalSellers,
+        total: totalSellers,
+        totalOrders: myData.totalOrders
+      },
+      rating: {
+        position: ratingRank.get(myId) || totalSellers,
+        total: totalSellers,
+        rating: myData.rating
+      },
+      products: {
+        position: productRank.get(myId) || totalSellers,
+        total: totalSellers,
+        totalProducts: myData.totalProducts
+      }
+    }
+  });
+});
+
+// PHASE 13.21 — Benchmark concurrentiel des produits du vendeur
+// Compare les produits publiés/approuvés du vendeur à la moyenne marketplace par catégorie
+const getSellerCompetitiveBenchmark = catchAsync(async (req, res, next) => {
+  const seller = req.seller; // ✅ Utilisation exclusive de req.seller._id
+
+  // ✅ Refuser toute tentative d'utiliser sellerId provenant de req.body, req.params ou req.query
+  if (
+    req.body?.sellerId !== undefined ||
+    req.query?.sellerId !== undefined ||
+    (req.params && req.params.sellerId !== undefined)
+  ) {
+    throw new AppError('Le sellerId fourni par le client est interdit.', 400);
+  }
+
+  // ✅ Produits publiés et approuvés du vendeur
+  const myProducts = await Product.find({
+    sellerId: seller._id,
+    approvalStatus: 'approved',
+    isPublished: true
+  }).select('name price rating numReviews stock category');
+
+  // ✅ Tous les produits publiés/approuvés de la marketplace
+  const marketProducts = await Product.find({
+    approvalStatus: 'approved',
+    isPublished: true
+  }).select('price rating numReviews stock category sellerId');
+
+  // ✅ Moyenne marketplace par catégorie (prix, note, stock)
+  const categoryStats = new Map();
+  marketProducts.forEach(p => {
+    // Exclure les produits du vendeur lui-même pour un benchmark objectif
+    if (p.sellerId && p.sellerId.toString() === seller._id.toString()) return;
+    const cat = p.category;
+    const current = categoryStats.get(cat) || { priceSum: 0, priceCount: 0, ratingSum: 0, ratingCount: 0, stockSum: 0, stockCount: 0, products: 0 };
+    current.priceSum += p.price;
+    current.priceCount += 1;
+    if (p.numReviews > 0) {
+      current.ratingSum += p.rating;
+      current.ratingCount += 1;
+    }
+    current.stockSum += p.stock;
+    current.stockCount += 1;
+    current.products += 1;
+    categoryStats.set(cat, current);
+  });
+
+  // ✅ Construire le benchmark produit par produit
+  const benchmark = myProducts.map(product => {
+    const cat = product.category;
+    const stats = categoryStats.get(cat);
+
+    // ✅ Gérer les catégories sans assez de données concurrentes
+    if (!stats || stats.products < 2) {
+      return {
+        productId: product._id,
+        name: product.name,
+        category: cat,
+        price: product.price,
+        rating: product.numReviews > 0 ? product.rating : 0,
+        stock: product.stock,
+        marketAvgPrice: null,
+        marketAvgRating: null,
+        marketAvgStock: null,
+        priceDeltaPercent: null,
+        ratingDelta: null,
+        productsInCategory: stats ? stats.products : 0,
+        note: 'Pas assez de données concurrentes dans cette catégorie.'
+      };
+    }
+
+    const marketAvgPrice = stats.priceSum / stats.priceCount;
+    const marketAvgRating = stats.ratingCount > 0 ? stats.ratingSum / stats.ratingCount : 0;
+    const marketAvgStock = stats.stockSum / stats.stockCount;
+
+    // ✅ Delta prix en % (éviter division par zéro)
+    const priceDeltaPercent = marketAvgPrice > 0
+      ? Number((((product.price - marketAvgPrice) / marketAvgPrice) * 100).toFixed(2))
+      : null;
+
+    const ratingDelta = marketAvgRating > 0
+      ? Number((product.rating - marketAvgRating).toFixed(2))
+      : null;
+
+    return {
+      productId: product._id,
+      name: product.name,
+      category: cat,
+      price: product.price,
+      rating: product.numReviews > 0 ? product.rating : 0,
+      stock: product.stock,
+      marketAvgPrice: Number(marketAvgPrice.toFixed(2)),
+      marketAvgRating: Number(marketAvgRating.toFixed(2)),
+      marketAvgStock: Number(marketAvgStock.toFixed(2)),
+      priceDeltaPercent,
+      ratingDelta,
+      productsInCategory: stats.products,
+      note: null
+    };
+  });
+
+  res.status(200).json({
+    success: true,
+    count: benchmark.length,
+    benchmark
+  });
+});
+
+// PHASE 13.21 — Part de marché du vendeur
+// % de commandes et de revenus du vendeur sur le total marketplace
+const getSellerMarketShare = catchAsync(async (req, res, next) => {
+  const seller = req.seller; // ✅ Utilisation exclusive de req.seller._id
+
+  // ✅ Refuser toute tentative d'utiliser sellerId provenant de req.body, req.params ou req.query
+  if (
+    req.body?.sellerId !== undefined ||
+    req.query?.sellerId !== undefined ||
+    (req.params && req.params.sellerId !== undefined)
+  ) {
+    throw new AppError('Le sellerId fourni par le client est interdit.', 400);
+  }
+
+  // ✅ Récupérer les IDs des produits du vendeur
+  const myProducts = await Product.find({ sellerId: seller._id }).select('_id');
+  const myProductIds = myProducts.map(p => p._id);
+
+  // ✅ Tous les produits de la marketplace
+  const allProducts = await Product.find({}).select('_id sellerId');
+  const allProductIds = allProducts.map(p => p._id);
+
+  // ✅ Commandes non annulées de la marketplace
+  const allOrders = await Order.find({
+    'items.productId': { $in: allProductIds },
+    orderStatus: { $ne: 'cancelled' }
+  }).select('items');
+
+  // ✅ Commandes du vendeur (celles contenant au moins un de ses produits)
+  const myOrderSet = new Set();
+  const marketOrderSet = new Set();
+  let myRevenue = 0;
+  let marketRevenue = 0;
+  const myProductIdSet = new Set(myProductIds.map(id => id.toString()));
+
+  allOrders.forEach(order => {
+    const orderKey = order._id.toString();
+    marketOrderSet.add(orderKey);
+    let orderHasMyProduct = false;
+    let orderMyRevenue = 0;
+
+    order.items.forEach(item => {
+      if (!item.productId) return;
+      const prodId = item.productId.toString();
+      marketRevenue += item.price * item.quantity;
+      if (myProductIdSet.has(prodId)) {
+        orderHasMyProduct = true;
+        orderMyRevenue += item.price * item.quantity;
+      }
+    });
+
+    if (orderHasMyProduct) {
+      myOrderSet.add(orderKey);
+      myRevenue += orderMyRevenue;
+    }
+  });
+
+  const totalOrders = marketOrderSet.size;
+  const myOrders = myOrderSet.size;
+  const orderShare = totalOrders > 0 ? (myOrders / totalOrders) * 100 : 0;
+  const revenueShare = marketRevenue > 0 ? (myRevenue / marketRevenue) * 100 : 0;
+
+  res.status(200).json({
+    success: true,
+    marketShare: {
+      orders: {
+        mine: myOrders,
+        total: totalOrders,
+        share: Number(orderShare.toFixed(2))
+      },
+      revenue: {
+        mine: Number(myRevenue.toFixed(2)),
+        total: Number(marketRevenue.toFixed(2)),
+        share: Number(revenueShare.toFixed(2))
+      }
+    }
+  });
+});
+
+// PHASE 13.21 — Avantages concurrentiels du vendeur
+// Opportunités basées uniquement sur les données réellement disponibles
+const getSellerCompetitiveAdvantages = catchAsync(async (req, res, next) => {
+  const seller = req.seller; // ✅ Utilisation exclusive de req.seller._id
+
+  // ✅ Refuser toute tentative d'utiliser sellerId provenant de req.body, req.params ou req.query
+  if (
+    req.body?.sellerId !== undefined ||
+    req.query?.sellerId !== undefined ||
+    (req.params && req.params.sellerId !== undefined)
+  ) {
+    throw new AppError('Le sellerId fourni par le client est interdit.', 400);
+  }
+
+  // ✅ Produits publiés/approuvés du vendeur
+  const myProducts = await Product.find({
+    sellerId: seller._id,
+    approvalStatus: 'approved',
+    isPublished: true
+  }).select('name price rating numReviews stock category');
+
+  // ✅ Produits publiés/approuvés des concurrents (marketplace hors vendeur)
+  const marketProducts = await Product.find({
+    approvalStatus: 'approved',
+    isPublished: true,
+    sellerId: { $ne: seller._id }
+  }).select('price rating numReviews stock category');
+
+  // ✅ Statistiques par catégorie (marketplace hors vendeur)
+  const categoryStats = new Map();
+  marketProducts.forEach(p => {
+    const cat = p.category;
+    const current = categoryStats.get(cat) || { priceSum: 0, priceCount: 0, products: 0 };
+    current.priceSum += p.price;
+    current.priceCount += 1;
+    current.products += 1;
+    categoryStats.set(cat, current);
+  });
+
+const advantages = [];
+
+  // ✅ 1) Produits mieux notés que la moyenne de leur catégorie
+  // Recalculer les moyennes de note par catégorie (concurrents)
+  const catRatingMap = new Map();
+  marketProducts.forEach(p => {
+    if (p.numReviews === 0) return;
+    const cat = p.category;
+    const current = catRatingMap.get(cat) || { sum: 0, count: 0 };
+    current.sum += p.rating;
+    current.count += 1;
+    catRatingMap.set(cat, current);
+  });
+
+  myProducts.forEach(product => {
+    if (product.numReviews === 0) return;
+    const catStats = catRatingMap.get(product.category);
+    const avgCatRating = catStats && catStats.count > 0 ? catStats.sum / catStats.count : 0;
+    if (avgCatRating > 0 && product.rating > avgCatRating) {
+      advantages.push({
+        type: 'rating',
+        title: `Note supérieure à la moyenne`,
+        description: `« ${product.name} » (${product.rating}/5) est mieux noté que la moyenne des produits concurrents (${avgCatRating.toFixed(2)}/5) dans la catégorie ${product.category}.`,
+        productId: product._id
+      });
+    }
+  });
+
+  // ✅ 2) Produits au prix inférieur à la moyenne de leur catégorie
+  myProducts.forEach(product => {
+    const stats = categoryStats.get(product.category);
+    if (!stats || stats.priceCount < 2) return;
+    const avgPrice = stats.priceSum / stats.priceCount;
+    if (avgPrice > 0 && product.price < avgPrice) {
+      const discount = ((avgPrice - product.price) / avgPrice) * 100;
+      advantages.push({
+        type: 'pricing',
+        title: 'Prix compétitif',
+        description: `« ${product.name} » (${product.price}) est ${discount.toFixed(1)}% moins cher que la moyenne (${avgPrice.toFixed(2)}) dans la catégorie ${product.category}.`,
+        productId: product._id
+      });
+    }
+  });
+
+  // ✅ 3) Catégories où le vendeur est présent et la concurrence est faible
+  const myCategories = new Set(myProducts.map(p => p.category));
+  categoryStats.forEach((stats, cat) => {
+    if (myCategories.has(cat) && stats.products < 3) {
+      advantages.push({
+        type: 'category',
+        title: 'Faible concurrence sur une catégorie',
+        description: `Vous êtes présent dans « ${cat} » avec seulement ${stats.products} produit(s) concurrent(s) publié(s). Bénéficiez de cette faible concurrence.`,
+        category: cat
+      });
+    }
+  });
+
+  // ✅ 4) Produits en stock alors que la catégorie a peu de stock moyen
+  const catStockMap = new Map();
+  marketProducts.forEach(p => {
+    const cat = p.category;
+    const current = catStockMap.get(cat) || { sum: 0, count: 0 };
+    current.sum += p.stock;
+    current.count += 1;
+    catStockMap.set(cat, current);
+  });
+
+  myProducts.forEach(product => {
+    const stats = catStockMap.get(product.category);
+    if (!stats || stats.count < 2) return;
+    const avgStock = stats.sum / stats.count;
+    if (product.stock > 0 && product.stock > avgStock) {
+      advantages.push({
+        type: 'stock',
+        title: 'Meilleure disponibilité',
+        description: `« ${product.name} » a un stock (${product.stock}) supérieur à la moyenne des concurrents (${Math.round(avgStock)}) dans sa catégorie.`,
+        productId: product._id
+      });
+    }
+  });
+
+  // ✅ Gérer le cas vide
+  if (advantages.length === 0) {
+    advantages.push({
+      type: 'none',
+      title: 'Aucun avantage concurrentiel détecté',
+      description: 'Améliorez vos prix, notes ou disponibilité pour gagner un avantage concurrentiel.'
+    });
+  }
+
+  res.status(200).json({
+    success: true,
+    count: advantages.length,
+    advantages
+  });
+});
+
+// PHASE 13.21 — Top vendeurs à surveiller
+// Données réellement publiques uniquement (storeName, rating, produits publics, position)
+const getSellerTopCompetitors = catchAsync(async (req, res, next) => {
+  const seller = req.seller; // ✅ Utilisation exclusive de req.seller._id
+
+  // ✅ Refuser toute tentative d'utiliser sellerId provenant de req.body, req.params ou req.query
+  if (
+    req.body?.sellerId !== undefined ||
+    req.query?.sellerId !== undefined ||
+    (req.params && req.params.sellerId !== undefined)
+  ) {
+    throw new AppError('Le sellerId fourni par le client est interdit.', 400);
+  }
+
+  // ✅ Nombre de concurrents à retourner (défaut 5, max 20)
+  const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 5, 1), 20);
+
+  // ✅ Vendeurs approuvés (hors le vendeur connecté)
+  const competitors = await Seller.find({
+    status: 'approved',
+    _id: { $ne: seller._id }
+  }).select('storeName rating totalReviews');
+
+  const competitorIds = competitors.map(c => c._id);
+
+  // ✅ Compter les produits publics (publiés + approuvés) par concurrent
+  const publicProducts = await Product.find({
+    sellerId: { $in: competitorIds },
+    approvalStatus: 'approved',
+    isPublished: true
+  }).select('sellerId');
+
+  const productCountBySeller = new Map();
+  publicProducts.forEach(p => {
+    if (!p.sellerId) return;
+    const sid = p.sellerId.toString();
+    productCountBySeller.set(sid, (productCountBySeller.get(sid) || 0) + 1);
+  });
+
+  // ✅ Construire la liste des concurrents avec uniquement des données publiques
+  const competitorsList = competitors.map(c => {
+    const sid = c._id.toString();
+    return {
+      sellerId: c._id,
+      storeName: c.storeName,
+      rating: c.rating,
+      totalReviews: c.totalReviews,
+      publicProducts: productCountBySeller.get(sid) || 0
+    };
+  });
+
+  // ✅ Classement par note (donnée publique), puis par nombre de produits publics
+  competitorsList.sort((a, b) => {
+    if (b.rating !== a.rating) return b.rating - a.rating;
+    return b.publicProducts - a.publicProducts;
+  });
+
+  const topCompetitors = competitorsList.slice(0, limit).map((c, index) => ({
+    rank: index + 1,
+    sellerId: c.sellerId,
+    storeName: c.storeName,
+    rating: c.rating,
+    totalReviews: c.totalReviews,
+    publicProducts: c.publicProducts
+  }));
+
+  res.status(200).json({
+    success: true,
+    count: topCompetitors.length,
+    topCompetitors
+  });
+});
+
 module.exports = {
+  // PHASE 13.21
+  getSellerMarketplaceRanking,
+  getSellerCompetitiveBenchmark,
+  getSellerMarketShare,
+  getSellerCompetitiveAdvantages,
+  getSellerTopCompetitors,
   // PHASE 13.20
   getSellerGrowthEngine,
   getSellerSmartCampaigns,
