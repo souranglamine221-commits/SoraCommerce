@@ -1,5 +1,5 @@
 // Backend/controllers/sellerController.js
-const mongoose = require('mongoose'); // ✅ Import nécessaire pour ObjectId validation
+  const mongoose = require('mongoose'); // ✅ Import nécessaire pour ObjectId validation
 const Seller = require('../models/Seller');
 const User = require('../models/User');
 const Product = require('../models/Product');
@@ -4947,8 +4947,1023 @@ const getSellerTopCompetitors = catchAsync(async (req, res, next) => {
     topCompetitors
   });
 });
+// PHASE 13.22 — Seller AI Decision Center
+// Centre de décision intelligent : agrège les données existantes en actions prioritaires
+// Helper réutilisable : marqueur de sécurité "sellerId client interdit"
+const assertNoExternalSellerId = (req) => {
+  if (
+    req.body?.sellerId !== undefined ||
+    req.query?.sellerId !== undefined ||
+    (req.params && req.params.sellerId !== undefined)
+  ) {
+    throw new AppError('Le sellerId fourni par le client est interdit.', 400);
+  }
+};
+
+// Helper réutilisable : taux de croissance protégé contre la division par zéro
+const computeGrowthRate13 = (current, previous) => {
+  if (!previous || previous === 0) return current === 0 ? 0 : 100;
+  return ((current - previous) / previous) * 100;
+};
+
+// Helper réutilisable : collecte des données de base du vendeur (produits + commandes)
+const collectSellerDecisionData = async (seller) => {
+  const products = await Product.find({ sellerId: seller._id })
+    .select('name price stock category approvalStatus isPublished rating numReviews createdAt');
+
+  const sellerProductIds = products.map(p => p._id);
+  const sellerProductIdSet = new Set(sellerProductIds.map(id => id.toString()));
+
+  // Toutes les commandes (y compris annulées pour les taux)
+  const allOrders = await Order.find({
+    'items.productId': { $in: sellerProductIds }
+  }).select('userId items orderStatus createdAt');
+
+  // Commandes non annulées pour revenus / clients / commandes
+  const validOrders = allOrders.filter(o => o.orderStatus !== 'cancelled');
+
+  // Revenus totaux et clients uniques
+  const customerSet = new Set();
+  let totalRevenue = 0;
+  const salesMap = new Map();
+
+  validOrders.forEach(order => {
+    if (order.userId) customerSet.add(order.userId.toString());
+    const sellerItems = order.items.filter(item =>
+      item.productId && sellerProductIdSet.has(item.productId.toString())
+    );
+    sellerItems.forEach(item => {
+      totalRevenue += item.price * item.quantity;
+      const prodId = item.productId.toString();
+      const current = salesMap.get(prodId) || { productId: item.productId, quantitySold: 0, revenue: 0 };
+      current.quantitySold += item.quantity;
+      current.revenue += item.price * item.quantity;
+      salesMap.set(prodId, current);
+    });
+  });
+
+  // Périodes de comparaison 30 jours vs 30 jours précédents
+  const now = new Date();
+  const startCurrent = new Date(now);
+  startCurrent.setHours(0, 0, 0, 0);
+  startCurrent.setDate(startCurrent.getDate() - 29);
+  const startPrevious = new Date(startCurrent);
+  startPrevious.setDate(startPrevious.getDate() - 30);
+
+  const currentOrders = validOrders.filter(o => o.createdAt >= startCurrent);
+  const previousOrders = validOrders.filter(o => o.createdAt >= startPrevious && o.createdAt < startCurrent);
+
+  const computeRevenue = (orderList) => orderList.reduce((sum, order) => {
+    const sellerItems = order.items.filter(item =>
+      item.productId && sellerProductIdSet.has(item.productId.toString())
+    );
+    return sum + sellerItems.reduce((itemSum, item) => itemSum + (item.price * item.quantity), 0);
+  }, 0);
+
+  const computeCustomers = (orderList) => {
+    const set = new Set();
+    orderList.forEach(o => { if (o.userId) set.add(o.userId.toString()); });
+    return set.size;
+  };
+
+  const currentRevenue = computeRevenue(currentOrders);
+  const previousRevenue = computeRevenue(previousOrders);
+  const revenueGrowth = computeGrowthRate13(currentRevenue, previousRevenue);
+  const orderGrowth = computeGrowthRate13(currentOrders.length, previousOrders.length);
+  const customerGrowth = computeGrowthRate13(
+    computeCustomers(currentOrders),
+    computeCustomers(previousOrders)
+  );
+
+  // Taux de livraison
+  const deliveredOrders = allOrders.filter(o => o.orderStatus === 'delivered').length;
+  const cancelledOrders = allOrders.filter(o => o.orderStatus === 'cancelled').length;
+  const resolvedOrders = deliveredOrders + cancelledOrders;
+  const deliveryRate = resolvedOrders > 0 ? (deliveredOrders / resolvedOrders) * 100 : 0;
+
+  // Stock
+  const lowStockThreshold = 5;
+  const activeProducts = products.filter(p => p.stock > 0).length;
+  const outOfStock = products.filter(p => p.stock === 0).length;
+  const lowStock = products.filter(p => p.stock > 0 && p.stock <= lowStockThreshold).length;
+  const publishedProducts = products.filter(p => p.isPublished).length;
+  const neverSoldPublished = products.filter(p => {
+    const sale = salesMap.get(p._id.toString());
+    return p.isPublished && (!sale || sale.quantitySold === 0);
+  });
+  const lowRated = products.filter(p => p.numReviews > 0 && p.rating < 3.5);
+  const wellRated = products.filter(p => p.numReviews > 0 && p.rating >= 4.5);
+  const pendingCount = products.filter(p => p.approvalStatus === 'pending').length;
+  const rejectedCount = products.filter(p => p.approvalStatus === 'rejected').length;
+
+  // Best seller
+  const productMap = new Map(products.map(p => [p._id.toString(), p]));
+  let bestSeller = null;
+  let bestQty = 0;
+  salesMap.forEach((sale, prodId) => {
+    if (sale.quantitySold > bestQty) {
+      bestQty = sale.quantitySold;
+      bestSeller = productMap.get(prodId);
+    }
+  });
+
+  return {
+    products,
+    allOrders,
+    validOrders,
+    sellerProductIdSet,
+    totalRevenue,
+    totalOrders: validOrders.length,
+    totalCustomers: customerSet.size,
+    salesMap,
+    productMap,
+    bestSeller,
+    bestQty,
+    revenueGrowth,
+    orderGrowth,
+    customerGrowth,
+    deliveryRate,
+    lowStockThreshold,
+    activeProducts,
+    outOfStock,
+    lowStock,
+    publishedProducts,
+    neverSoldPublished,
+    lowRated,
+    wellRated,
+    pendingCount,
+    rejectedCount
+  };
+};
+
+// PHASE 13.22 — Score de santé business (0-100) + facteurs +/-
+const getSellerBusinessHealthScore = catchAsync(async (req, res, next) => {
+  const seller = req.seller; // ✅ Utilisation exclusive de req.seller._id
+  assertNoExternalSellerId(req);
+
+  const data = await collectSellerDecisionData(seller);
+  const totalProducts = data.products.length;
+
+  // ✅ Health Score (0-100) pondéré — reuse structure des phases 13.17 / 13.20
+  // Score revenue (0-25)
+  const revenueScore = Math.max(0, Math.min(25, 12.5 + (data.revenueGrowth / 100) * 12.5));
+  // Score commandes (0-20)
+  const orderScore = Math.max(0, Math.min(20, 10 + (data.orderGrowth / 100) * 10));
+  // Score livraison (0-15)
+  const deliveryScore = (data.deliveryRate / 100) * 15;
+  // Score clients (0-15)
+  const customerScore = Math.max(0, Math.min(15, 7.5 + (data.customerGrowth / 100) * 7.5));
+  // Score produits actifs (0-15)
+  const activeRatio = totalProducts > 0 ? data.activeProducts / totalProducts : 0;
+  const activeScore = activeRatio * 15;
+  // Score stock (0-10)
+  const stockIssueRatio = totalProducts > 0 ? (data.outOfStock + data.lowStock) / totalProducts : 0;
+  const stockScore = (1 - stockIssueRatio) * 10;
+
+  const healthScore = Math.max(0, Math.min(100, Math.round(
+    revenueScore + orderScore + deliveryScore + customerScore + activeScore + stockScore
+  )));
+
+  // ✅ Facteurs positifs / négatifs (uniquement basés sur les données réelles)
+  const positiveFactors = [];
+  const negativeFactors = [];
+
+  if (data.revenueGrowth > 0) positiveFactors.push(`Croissance du chiffre d'affaires (+${data.revenueGrowth.toFixed(1)}% sur 30 j).`);
+  if (data.orderGrowth > 0) positiveFactors.push(`Croissance des commandes (+${data.orderGrowth.toFixed(1)}% sur 30 j).`);
+  if (data.customerGrowth > 0) positiveFactors.push(`Croissance de la clientèle (+${data.customerGrowth.toFixed(1)}% sur 30 j).`);
+  if (data.deliveryRate >= 80) positiveFactors.push(`Taux de livraison élevé (${data.deliveryRate.toFixed(1)}%).`);
+  if (data.wellRated.length > 0) positiveFactors.push(`${data.wellRated.length} produit(s) très bien noté(s) (≥ 4.5/5).`);
+  if (totalProducts > 0 && data.activeProducts === totalProducts) positiveFactors.push('Tous vos produits sont en stock.');
+  if (data.bestSeller) positiveFactors.push(`« ${data.bestSeller.name} » est un best-seller (${data.bestQty} un. vendues).`);
+
+  if (data.revenueGrowth < -10) negativeFactors.push(`Baisse du chiffre d'affaires (${data.revenueGrowth.toFixed(1)}% sur 30 j).`);
+  if (data.outOfStock > 0) negativeFactors.push(`${data.outOfStock} produit(s) en rupture de stock.`);
+  if (data.lowStock > 0) negativeFactors.push(`${data.lowStock} produit(s) avec un stock faible.`);
+  if (data.deliveryRate < 70) negativeFactors.push(`Taux de livraison faible (${data.deliveryRate.toFixed(1)}%).`);
+  if (data.neverSoldPublished.length > 0) negativeFactors.push(`${data.neverSoldPublished.length} produit(s) publié(s) sans vente.`);
+  if (data.lowRated.length > 0) negativeFactors.push(`${data.lowRated.length} produit(s) avec une note inférieure à 3.5/5.`);
+  if (data.customerGrowth < -10 && data.totalCustomers > 0) negativeFactors.push('Baisse de la clientèle récente.');
+  if (data.pendingCount > 0) negativeFactors.push(`${data.pendingCount} produit(s) en attente d'approbation.`);
+
+  if (positiveFactors.length === 0) positiveFactors.push('Analyse basée sur les données disponibles, aucune croissance notable détectée.');
+  if (negativeFactors.length === 0) negativeFactors.push('Aucun facteur négatif majeur détecté.');
+
+  res.status(200).json({
+    success: true,
+    healthScore,
+    breakdown: {
+      revenue: Number(revenueScore.toFixed(1)),
+      orders: Number(orderScore.toFixed(1)),
+      delivery: Number(deliveryScore.toFixed(1)),
+      customers: Number(customerScore.toFixed(1)),
+      products: Number(activeScore.toFixed(1)),
+      stock: Number(stockScore.toFixed(1))
+    },
+    positiveFactors,
+    negativeFactors
+  });
+});
+
+// PHASE 13.22 — Moteur de priorités
+// Liste des priorités : type, priority, severity, title, description, reason, recommendedAction, expectedImpact
+const getSellerPriorityEngine = catchAsync(async (req, res, next) => {
+  const seller = req.seller; // ✅ Utilisation exclusive de req.seller._id
+  assertNoExternalSellerId(req);
+
+  const data = await collectSellerDecisionData(seller);
+  const priorities = [];
+  const lowStockThreshold = data.lowStockThreshold;
+
+  // ✅ 1) Stock — rupture critique
+  data.products.forEach(product => {
+    if (product.stock === 0) {
+      priorities.push({
+        type: 'stock',
+        priority: 'high',
+        severity: 'critical',
+        title: `Réapprovisionnez « ${product.name} »`,
+        description: 'Ce produit est en rupture de stock.',
+        reason: 'Rupture de stock détectée.',
+        recommendedAction: 'Commander de nouvelles unités dès que possible.',
+        expectedImpact: 'high'
+      });
+    }
+  });
+
+  // ✅ 2) Stock — faible avec ventes
+  data.products.forEach(product => {
+    const sale = data.salesMap.get(product._id.toString());
+    const quantitySold = sale ? sale.quantitySold : 0;
+    if (product.stock > 0 && product.stock <= lowStockThreshold && quantitySold > 0) {
+      priorities.push({
+        type: 'stock',
+        priority: 'high',
+        severity: 'high',
+        title: `Anticipez la rupture de « ${product.name} »`,
+        description: `Il reste ${product.stock} unité(s) pour un produit qui se vend.`,
+        reason: 'Stock faible et ventes en cours.',
+        recommendedAction: 'Augmenter le stock de ce produit.',
+        expectedImpact: 'high'
+      });
+    }
+  });
+
+  // ✅ 3) Ventes — baisse significative
+  if (data.revenueGrowth < -10) {
+    priorities.push({
+      type: 'sales',
+      priority: 'high',
+      severity: 'high',
+      title: 'Baisse des ventes',
+      description: `Vos revenus ont diminué de ${Math.abs(data.revenueGrowth).toFixed(1)}% sur les 30 derniers jours.`,
+      reason: 'Tendance négative du chiffre d\'affaires.',
+      recommendedAction: 'Lancer une promotion ou améliorer la visibilité de vos produits.',
+      expectedImpact: 'medium'
+    });
+  }
+
+  // ✅ 4) Ventes — aucune vente
+  if (data.totalOrders === 0) {
+    priorities.push({
+      type: 'sales',
+      priority: 'high',
+      severity: 'critical',
+      title: 'Générer votre première vente',
+      description: 'Aucune vente enregistrée sur votre boutique.',
+      reason: 'Aucune commande détectée.',
+      recommendedAction: 'Assurez-vous que vos produits sont approuvés et publiés, puis partagez votre boutique.',
+      expectedImpact: 'high'
+    });
+  }
+
+  // ✅ 5) Produits — jamais vendus
+  if (data.neverSoldPublished.length > 0) {
+    priorities.push({
+      type: 'product',
+      priority: 'medium',
+      severity: 'medium',
+      title: `${data.neverSoldPublished.length} produit(s) publié(s) sans vente`,
+      description: 'Ces produits n\'ont pas encore généré de vente.',
+      reason: 'Faible performance de conversion.',
+      recommendedAction: 'Optimiser les descriptions, images ou prix de ces produits.',
+      expectedImpact: 'medium'
+    });
+  }
+
+  // ✅ 6) Rating — produits mal notés
+  if (data.lowRated.length > 0) {
+    priorities.push({
+      type: 'quality',
+      priority: 'high',
+      severity: 'high',
+      title: 'Améliorez la qualité de vos produits',
+      description: `${data.lowRated.length} produit(s) ont une note inférieure à 3.5/5.`,
+      reason: 'Baisse de satisfaction client potentielle.',
+      recommendedAction: 'Analyser les avis et améliorer la qualité des produits concernés.',
+      expectedImpact: 'medium'
+    });
+  }
+
+  // ✅ 7) Opportunité — produits bien notés mais peu vendus
+  data.products.forEach(product => {
+    const sale = data.salesMap.get(product._id.toString());
+    const quantitySold = sale ? sale.quantitySold : 0;
+    if (product.numReviews > 0 && product.rating >= 4.5 && quantitySold === 0) {
+      priorities.push({
+        type: 'opportunity',
+        priority: 'medium',
+        severity: 'opportunity',
+        title: `Promouvoir « ${product.name} »`,
+        description: `Ce produit est très bien noté (${product.rating}/5) mais n'est pas encore vendu.`,
+        reason: 'Produit bien noté mais peu vendu.',
+        recommendedAction: 'Mettre en avant ce produit dans vos campagnes.',
+        expectedImpact: 'high'
+      });
+    }
+  });
+
+  // ✅ 8) Opportunité — promouvoir le best-seller
+  if (data.bestSeller) {
+    priorities.push({
+      type: 'growth',
+      priority: 'medium',
+      severity: 'opportunity',
+      title: `Promouvoir « ${data.bestSeller.name} »`,
+      description: 'Votre meilleur vendeur mérite plus de visibilité.',
+      reason: 'Best-seller identifié.',
+      recommendedAction: 'Mettre en avant ce produit dans les bannières et publicités.',
+      expectedImpact: 'high'
+    });
+  }
+
+  // ✅ 9) Position marketplace (données publiques uniquement)
+  const approvedSellers = await Seller.find({ status: 'approved' }).countDocuments();
+  if (approvedSellers > 0 && data.totalRevenue > 0) {
+    priorities.push({
+      type: 'marketplace',
+      priority: 'low',
+      severity: 'opportunity',
+      title: 'Consolider votre position marketplace',
+      description: `Vous réalisez des ventes parmi ${approvedSellers} vendeur(s) approuvé(s).`,
+      reason: 'Position concurrentielle détectée.',
+      recommendedAction: 'Maintenir votre dynamique et élargir votre catalogue.',
+      expectedImpact: 'medium'
+    });
+  }
+
+  // ✅ 10) Produits en attente
+  if (data.pendingCount > 0) {
+    priorities.push({
+      type: 'approval',
+      priority: 'medium',
+      severity: 'medium',
+      title: `${data.pendingCount} produit(s) en attente d'approbation`,
+      description: 'Vos produits en attente seront publiés après validation administrateur.',
+      reason: 'Catalogue incomplet.',
+      recommendedAction: 'Suivre le statut d\'approbation de vos produits.',
+      expectedImpact: 'low'
+    });
+  }
+
+  // ✅ 11) Cas vide — aucun produit
+  if (data.products.length === 0) {
+    priorities.push({
+      type: 'catalog',
+      priority: 'high',
+      severity: 'critical',
+      title: 'Créez votre premier produit',
+      description: 'Votre boutique ne contient aucun produit.',
+      reason: 'Catalogue vide.',
+      recommendedAction: 'Ajouter votre premier produit pour commencer à vendre.',
+      expectedImpact: 'high'
+    });
+  }
+
+  // ✅ Tri par priorité puis sévérité
+  const priorityOrder = { high: 0, medium: 1, low: 2 };
+  const severityOrder = { critical: 0, high: 1, medium: 2, low: 3, opportunity: 4 };
+  priorities.sort((a, b) => {
+    const p = priorityOrder[a.priority] - priorityOrder[b.priority];
+    if (p !== 0) return p;
+    return (severityOrder[a.severity] ?? 5) - (severityOrder[b.severity] ?? 5);
+  });
+
+  res.status(200).json({
+    success: true,
+    count: priorities.length,
+    priorities
+  });
+});
+
+// PHASE 13.22 — Plan d'action quotidien
+// [{ title, category, priority, action, reason, expectedImpact }]
+const getSellerDailyActionPlan = catchAsync(async (req, res, next) => {
+  const seller = req.seller; // ✅ Utilisation exclusive de req.seller._id
+  assertNoExternalSellerId(req);
+
+  const data = await collectSellerDecisionData(seller);
+  const lowStockThreshold = data.lowStockThreshold;
+  const today = [];
+  const thisWeek = [];
+  const thisMonth = [];
+
+  // ✅ Aujourd'hui — urgences stock
+  data.products.forEach(product => {
+    const sale = data.salesMap.get(product._id.toString());
+    const quantitySold = sale ? sale.quantitySold : 0;
+    if (product.stock === 0) {
+      today.push({
+        title: `Réapprovisionner « ${product.name} »`,
+        category: 'Inventory',
+        priority: 'high',
+        action: 'Commander de nouvelles unités pour éviter la rupture.',
+        reason: 'Produit en rupture de stock.',
+        expectedImpact: 'high'
+      });
+    } else if (product.stock <= lowStockThreshold && quantitySold > 0) {
+      today.push({
+        title: `Augmenter le stock de « ${product.name} »`,
+        category: 'Inventory',
+        priority: 'high',
+        action: `Réapprovisionner ce produit (stock actuel : ${product.stock}).`,
+        reason: 'Stock faible et ventes en cours.',
+        expectedImpact: 'high'
+      });
+    }
+  });
+
+  // ✅ Aujourd'hui — baisse des ventes
+  if (data.revenueGrowth < -10) {
+    today.push({
+      title: 'Relancer vos ventes',
+      category: 'Sales',
+      priority: 'high',
+      action: 'Proposer une promotion ou améliorer la visibilité de vos produits.',
+      reason: `Baisse du chiffre d'affaires de ${Math.abs(data.revenueGrowth).toFixed(1)}%.`,
+      expectedImpact: 'medium'
+    });
+  }
+
+  // ✅ Cette semaine — produits publiés sans vente
+  if (data.neverSoldPublished.length > 0) {
+    thisWeek.push({
+      title: 'Optimiser les fiches produits sans vente',
+      category: 'Products',
+      priority: 'medium',
+      action: `Améliorer descriptions, images ou prix de ${data.neverSoldPublished.length} produit(s).`,
+      reason: 'Produits publiés mais aucune vente.',
+      expectedImpact: 'medium'
+    });
+  }
+
+  // ✅ Cette semaine — produits mal notés
+  if (data.lowRated.length > 0) {
+    thisWeek.push({
+      title: 'Traiter les avis négatifs',
+      category: 'Quality',
+      priority: 'medium',
+      action: `Analyser les avis et améliorer la qualité de ${data.lowRated.length} produit(s).`,
+      reason: 'Notes inférieures à 3.5/5.',
+      expectedImpact: 'medium'
+    });
+  }
+
+  // ✅ Cette semaine — approbations en attente
+  if (data.pendingCount > 0) {
+    thisWeek.push({
+      title: 'Suivre les approbations',
+      category: 'Products',
+      priority: 'medium',
+      action: `Suivre le statut de ${data.pendingCount} produit(s) en attente.`,
+      reason: 'Produits en attente de validation.',
+      expectedImpact: 'low'
+    });
+  }
+
+  // ✅ Ce mois-ci — promotion du best-seller
+  if (data.bestSeller) {
+    thisMonth.push({
+      title: `Promouvoir « ${data.bestSeller.name} »`,
+      category: 'Marketing',
+      priority: 'medium',
+      action: 'Mettre en avant ce best-seller dans vos campagnes.',
+      reason: 'Produit le plus vendu identifié.',
+      expectedImpact: 'high'
+    });
+  }
+
+  // ✅ Ce mois-ci — développement du catalogue
+  if (data.totalRevenue > 0) {
+    thisMonth.push({
+      title: 'Développer votre gamme',
+      category: 'Growth',
+      priority: 'low',
+      action: 'Ajouter des produits complémentaires aux plus vendus.',
+      reason: 'Dynamique positive à exploiter.',
+      expectedImpact: 'medium'
+    });
+  } else {
+    thisMonth.push({
+      title: 'Générer les premières ventes',
+      category: 'Sales',
+      priority: 'high',
+      action: 'Publier vos produits et partager votre boutique pour attirer vos premiers clients.',
+      reason: 'Aucune vente enregistrée.',
+      expectedImpact: 'high'
+    });
+  }
+
+  // ✅ Ce mois-ci — fidélisation
+  const returningSet = new Set();
+  const firstOrders = new Map();
+  data.validOrders.forEach(o => {
+    if (!o.userId) return;
+    const uid = o.userId.toString();
+    if (firstOrders.has(uid)) returningSet.add(uid);
+    else firstOrders.set(uid, true);
+  });
+  if (returningSet.size === 0 && data.totalOrders > 0) {
+    thisMonth.push({
+      title: 'Fidéliser vos clients',
+      category: 'Customers',
+      priority: 'medium',
+      action: 'Offrir des réductions sur les deuxièmes achats.',
+      reason: 'Aucun client récurrent détecté.',
+      expectedImpact: 'medium'
+    });
+  }
+
+  // ✅ Tri par priorité
+  const priorityOrder = { high: 0, medium: 1, low: 2 };
+  const sortByPriority = (list) => list.sort((a, b) => priorityOrder[a.priority] - priorityOrder[b.priority]);
+
+  const actionPlan = {
+    today: sortByPriority(today),
+    thisWeek: sortByPriority(thisWeek),
+    thisMonth: sortByPriority(thisMonth)
+  };
+  const totalActions = actionPlan.today.length + actionPlan.thisWeek.length + actionPlan.thisMonth.length;
+
+  res.status(200).json({
+    success: true,
+    count: totalActions,
+    actionPlan
+  });
+});
+
+// PHASE 13.22 — Alertes IA
+// Niveaux : critical / high / medium / low / opportunity
+const getSellerAIAlerts = catchAsync(async (req, res, next) => {
+  const seller = req.seller; // ✅ Utilisation exclusive de req.seller._id
+  assertNoExternalSellerId(req);
+
+  const data = await collectSellerDecisionData(seller);
+  const alerts = [];
+  const lowStockThreshold = data.lowStockThreshold;
+
+  // ✅ Critical — rupture de stock d'un produit qui se vend
+  data.products.forEach(product => {
+    const sale = data.salesMap.get(product._id.toString());
+    const quantitySold = sale ? sale.quantitySold : 0;
+    if (product.stock === 0 && quantitySold > 0) {
+      alerts.push({
+        level: 'critical',
+        category: 'Inventory',
+        title: `« ${product.name} » est en rupture alors qu'il se vend.`,
+        description: 'Réapprovisionnez rapidement pour éviter de perdre des ventes.',
+        isAutomation: true
+      });
+    }
+  });
+
+  // ✅ High — toute rupture
+  if (data.outOfStock > 0) {
+    alerts.push({
+      level: 'high',
+      category: 'Inventory',
+      title: `${data.outOfStock} produit(s) en rupture de stock.`,
+      description: 'Réapprovisionnez pour ne pas perdre de ventes.',
+      isAutomation: true
+    });
+  }
+
+  // ✅ High — baisse des ventes
+  if (data.revenueGrowth < -10) {
+    alerts.push({
+      level: 'high',
+      category: 'Sales',
+      title: `Vos ventes ont diminué de ${Math.abs(data.revenueGrowth).toFixed(1)}%.`,
+      description: 'Analysez vos prix et votre catalogue pour relancer la croissance.',
+      isAutomation: false
+    });
+  }
+
+  // ✅ Critical — aucune vente
+  if (data.totalOrders === 0) {
+    alerts.push({
+      level: 'critical',
+      category: 'Sales',
+      title: 'Aucune vente enregistrée sur votre boutique.',
+      description: 'Publiez vos produits et lancez une première promotion.',
+      isAutomation: false
+    });
+  }
+
+  // ✅ Medium — stock faible
+  if (data.lowStock > 0) {
+    alerts.push({
+      level: 'medium',
+      category: 'Inventory',
+      title: `${data.lowStock} produit(s) proche(s) de l'épuisement.`,
+      description: 'Prévoyez un réapprovisionnement.',
+      isAutomation: true
+    });
+  }
+
+  // ✅ Medium — produits sans vente
+  if (data.neverSoldPublished.length > 0) {
+    alerts.push({
+      level: 'medium',
+      category: 'Products',
+      title: `${data.neverSoldPublished.length} produit(s) publié(s) sans vente.`,
+      description: 'Optimisez leurs fiches pour stimuler les ventes.',
+      isAutomation: false
+    });
+  }
+
+  // ✅ Medium — produits mal notés
+  if (data.lowRated.length > 0) {
+    alerts.push({
+      level: 'medium',
+      category: 'Reviews',
+      title: `${data.lowRated.length} produit(s) avec une note inférieure à 3.5/5.`,
+      description: 'Analysez les avis clients pour améliorer la qualité.',
+      isAutomation: false
+    });
+  }
+
+  // ✅ Opportunity — produit très bien noté
+  if (data.wellRated.length > 0) {
+    alerts.push({
+      level: 'opportunity',
+      category: 'Reviews',
+      title: `${data.wellRated.length} produit(s) très bien noté(s) (≥ 4.5/5).`,
+      description: 'Mettez-les en avant pour convertir grâce à la preuve sociale.',
+      isAutomation: false
+    });
+  }
+
+  // ✅ Opportunity — opportunité de promotion
+  if (data.bestSeller) {
+    alerts.push({
+      level: 'opportunity',
+      category: 'Marketing',
+      title: `Vous avez une opportunité de promotion sur « ${data.bestSeller.name} ».`,
+      description: 'Votre best-seller mérite plus de visibilité pour multiplier les ventes.',
+      isAutomation: true
+    });
+  }
+
+  // ✅ Low — croissance positive
+  if (data.revenueGrowth > 0) {
+    alerts.push({
+      level: 'low',
+      category: 'Sales',
+      title: `Vos revenus ont augmenté de ${data.revenueGrowth.toFixed(1)}%.`,
+      description: 'Capitalisez sur cette dynamique positive.',
+      isAutomation: false
+    });
+  }
+
+  // ✅ Low — produits en attente
+  if (data.pendingCount > 0) {
+    alerts.push({
+      level: 'low',
+      category: 'Products',
+      title: `${data.pendingCount} produit(s) en attente d'approbation.`,
+      description: 'Suivez leur statut régulièrement.',
+      isAutomation: false
+    });
+  }
+
+  // ✅ Cas vide
+  if (alerts.length === 0) {
+    alerts.push({
+      level: 'low',
+      category: 'General',
+      title: 'Aucune alerte majeure détectée.',
+      description: 'Votre boutique fonctionne dans les limites attendues.',
+      isAutomation: false
+    });
+  }
+
+  // ✅ Tri par niveau
+  const levelOrder = { critical: 0, high: 1, medium: 2, low: 3, opportunity: 4 };
+  alerts.sort((a, b) => (levelOrder[a.level] ?? 5) - (levelOrder[b.level] ?? 5));
+
+  res.status(200).json({
+    success: true,
+    count: alerts.length,
+    alerts
+  });
+});
+
+// PHASE 13.22 — Résumé de décision
+// { overallStatus, healthScore, topProblem, topOpportunity, recommendedFirstAction, nextActions }
+const getSellerDecisionSummary = catchAsync(async (req, res, next) => {
+  const seller = req.seller; // ✅ Utilisation exclusive de req.seller._id
+  assertNoExternalSellerId(req);
+
+  const data = await collectSellerDecisionData(seller);
+
+  // ✅ Health score (même formule que getSellerBusinessHealthScore)
+  const totalProducts = data.products.length;
+  const revenueScore = Math.max(0, Math.min(25, 12.5 + (data.revenueGrowth / 100) * 12.5));
+  const orderScore = Math.max(0, Math.min(20, 10 + (data.orderGrowth / 100) * 10));
+  const deliveryScore = (data.deliveryRate / 100) * 15;
+  const customerScore = Math.max(0, Math.min(15, 7.5 + (data.customerGrowth / 100) * 7.5));
+  const activeRatio = totalProducts > 0 ? data.activeProducts / totalProducts : 0;
+  const activeScore = activeRatio * 15;
+  const stockIssueRatio = totalProducts > 0 ? (data.outOfStock + data.lowStock) / totalProducts : 0;
+  const stockScore = (1 - stockIssueRatio) * 10;
+  const healthScore = Math.max(0, Math.min(100, Math.round(
+    revenueScore + orderScore + deliveryScore + customerScore + activeScore + stockScore
+  )));
+
+  // ✅ overallStatus
+  let overallStatus = 'healthy';
+  if (healthScore < 50) overallStatus = 'at_risk';
+  else if (healthScore < 70) overallStatus = 'warning';
+
+  // ✅ Top problème
+  let topProblem = null;
+  if (data.products.length === 0) {
+    topProblem = {
+      type: 'catalog',
+      title: 'Catalogue vide',
+      priority: 'high',
+      severity: 'critical',
+      recommendedAction: 'Créez votre premier produit.'
+    };
+  } else if (data.totalOrders === 0) {
+    topProblem = {
+      type: 'sales',
+      title: 'Aucune vente',
+      priority: 'high',
+      severity: 'critical',
+      recommendedAction: 'Publiez vos produits et lancez une première promotion.'
+    };
+  } else if (data.outOfStock > 0) {
+    topProblem = {
+      type: 'stock',
+      title: `${data.outOfStock} produit(s) en rupture de stock`,
+      priority: 'high',
+      severity: 'high',
+      recommendedAction: 'Réapprovisionnez les produits en rupture.'
+    };
+  } else if (data.revenueGrowth < -10) {
+    topProblem = {
+      type: 'sales',
+      title: 'Baisse des ventes',
+      priority: 'high',
+      severity: 'high',
+      recommendedAction: 'Relancez vos ventes via une promotion ou une meilleure visibilité.'
+    };
+  } else if (data.lowRated.length > 0) {
+    topProblem = {
+      type: 'quality',
+      title: 'Baisse de satisfaction',
+      priority: 'high',
+      severity: 'medium',
+      recommendedAction: 'Améliorez la qualité des produits mal notés.'
+    };
+  } else {
+    topProblem = {
+      type: 'none',
+      title: 'Aucun problème majeur détecté',
+      priority: 'low',
+      severity: 'low',
+      recommendedAction: 'Continuez à développer votre catalogue.'
+    };
+  }
+
+  // ✅ Top opportunité
+  let topOpportunity = null;
+  if (data.bestSeller) {
+    topOpportunity = {
+      type: 'promotion',
+      title: `Promouvoir « ${data.bestSeller.name} »`,
+      impact: 'high'
+    };
+  } else if (data.wellRated.length > 0) {
+    topOpportunity = {
+      type: 'social_proof',
+      title: 'Mettre en avant vos produits les mieux notés',
+      impact: 'medium'
+    };
+  } else if (data.totalRevenue > 0) {
+    topOpportunity = {
+      type: 'growth',
+      title: 'Développer votre gamme de produits',
+      impact: 'medium'
+    };
+  } else {
+    topOpportunity = {
+      type: 'growth',
+      title: 'Lancer de nouveaux produits',
+      impact: 'medium'
+    };
+  }
+
+  // ✅ Action recommandée en premier
+  let recommendedFirstAction = null;
+  if (data.products.length === 0) {
+    recommendedFirstAction = {
+      title: 'Créer votre premier produit',
+      action: 'Ajouter un produit complet (nom, description, prix, images).',
+      reason: 'Votre catalogue est vide.',
+      expectedImpact: 'high'
+    };
+  } else if (data.totalOrders === 0) {
+    recommendedFirstAction = {
+      title: 'Générer votre première vente',
+      action: 'Publier vos produits et partager votre boutique.',
+      reason: 'Aucune vente enregistrée.',
+      expectedImpact: 'high'
+    };
+  } else if (data.outOfStock > 0) {
+    recommendedFirstAction = {
+      title: 'Réapprovisionner les ruptures',
+      action: 'Commander de nouvelles unités pour vos produits en rupture.',
+      reason: `${data.outOfStock} produit(s) en rupture de stock.`,
+      expectedImpact: 'high'
+    };
+  } else if (data.revenueGrowth < -10) {
+    recommendedFirstAction = {
+      title: 'Relancer vos ventes',
+      action: 'Lancer une promotion ciblée sur vos meilleurs produits.',
+      reason: `Baisse du chiffre d'affaires de ${Math.abs(data.revenueGrowth).toFixed(1)}%.`,
+      expectedImpact: 'medium'
+    };
+  } else if (data.bestSeller) {
+    recommendedFirstAction = {
+      title: 'Promouvoir votre best-seller',
+      action: `Mettre en avant « ${data.bestSeller.name} » dans vos campagnes.`,
+      reason: 'Produit le plus vendu, fort potentiel de croissance.',
+      expectedImpact: 'high'
+    };
+  } else {
+    recommendedFirstAction = {
+      title: 'Développer votre catalogue',
+      action: 'Ajouter de nouveaux produits dans vos catégories qui performent.',
+      reason: 'Dynamique positive à exploiter.',
+      expectedImpact: 'medium'
+    };
+  }
+
+  // ✅ Prochaines actions (max 3)
+  const nextActions = [];
+  if (data.lowStock > 0) {
+    nextActions.push({ title: `Anticiper le stock faible (${data.lowStock} produit(s))`, priority: 'medium' });
+  }
+  if (data.neverSoldPublished.length > 0) {
+    nextActions.push({ title: `Optimiser ${data.neverSoldPublished.length} produit(s) sans vente`, priority: 'medium' });
+  }
+  if (data.lowRated.length > 0) {
+    nextActions.push({ title: `Améliorer la note de ${data.lowRated.length} produit(s)`, priority: 'medium' });
+  }
+  if (data.pendingCount > 0) {
+    nextActions.push({ title: `Suivre l'approbation de ${data.pendingCount} produit(s)`, priority: 'low' });
+  }
+  if (data.wellRated.length > 0) {
+    nextActions.push({ title: 'Mettre en avant vos produits les mieux notés', priority: 'low' });
+  }
+  if (nextActions.length === 0 && data.totalRevenue > 0) {
+    nextActions.push({ title: 'Élargir votre gamme de produits', priority: 'low' });
+  }
+
+  res.status(200).json({
+    success: true,
+    summary: {
+      overallStatus,
+      healthScore,
+      topProblem,
+      topOpportunity,
+      recommendedFirstAction,
+      nextActions: nextActions.slice(0, 3)
+    }
+  });
+});
+
+// PHASE 13.22 — Centre de décision (orchestrateur principal)
+// Rassemble : healthScore, topProblem, topOpportunity, recommendedFirstAction, nextActions, summary
+const getSellerDecisionCenter = catchAsync(async (req, res, next) => {
+  const seller = req.seller; // ✅ Utilisation exclusive de req.seller._id
+  assertNoExternalSellerId(req);
+
+  const data = await collectSellerDecisionData(seller);
+
+  // ✅ Health score (même formule)
+  const totalProducts = data.products.length;
+  const revenueScore = Math.max(0, Math.min(25, 12.5 + (data.revenueGrowth / 100) * 12.5));
+  const orderScore = Math.max(0, Math.min(20, 10 + (data.orderGrowth / 100) * 10));
+  const deliveryScore = (data.deliveryRate / 100) * 15;
+  const customerScore = Math.max(0, Math.min(15, 7.5 + (data.customerGrowth / 100) * 7.5));
+  const activeRatio = totalProducts > 0 ? data.activeProducts / totalProducts : 0;
+  const activeScore = activeRatio * 15;
+  const stockIssueRatio = totalProducts > 0 ? (data.outOfStock + data.lowStock) / totalProducts : 0;
+  const stockScore = (1 - stockIssueRatio) * 10;
+  const healthScore = Math.max(0, Math.min(100, Math.round(
+    revenueScore + orderScore + deliveryScore + customerScore + activeScore + stockScore
+  )));
+
+  let overallStatus = 'healthy';
+  if (healthScore < 50) overallStatus = 'at_risk';
+  else if (healthScore < 70) overallStatus = 'warning';
+
+  // ✅ Top problème
+  let topProblem = null;
+  if (totalProducts === 0) {
+    topProblem = { type: 'catalog', title: 'Catalogue vide', priority: 'high', severity: 'critical', recommendedAction: 'Créez votre premier produit.' };
+  } else if (data.totalOrders === 0) {
+    topProblem = { type: 'sales', title: 'Aucune vente', priority: 'high', severity: 'critical', recommendedAction: 'Publiez vos produits et lancez une première promotion.' };
+  } else if (data.outOfStock > 0) {
+    topProblem = { type: 'stock', title: `${data.outOfStock} produit(s) en rupture de stock`, priority: 'high', severity: 'high', recommendedAction: 'Réapprovisionnez les produits en rupture.' };
+  } else if (data.revenueGrowth < -10) {
+    topProblem = { type: 'sales', title: 'Baisse des ventes', priority: 'high', severity: 'high', recommendedAction: 'Relancez vos ventes via une promotion.' };
+  } else if (data.lowRated.length > 0) {
+    topProblem = { type: 'quality', title: 'Baisse de satisfaction', priority: 'high', severity: 'medium', recommendedAction: 'Améliorez la qualité des produits mal notés.' };
+  } else {
+    topProblem = { type: 'none', title: 'Aucun problème majeur détecté', priority: 'low', severity: 'low', recommendedAction: 'Continuez à développer votre catalogue.' };
+  }
+
+  // ✅ Top opportunité
+  let topOpportunity = null;
+  if (data.bestSeller) {
+    topOpportunity = { type: 'promotion', title: `Promouvoir « ${data.bestSeller.name} »`, impact: 'high' };
+  } else if (data.wellRated.length > 0) {
+    topOpportunity = { type: 'social_proof', title: 'Mettre en avant vos produits les mieux notés', impact: 'medium' };
+  } else if (data.totalRevenue > 0) {
+    topOpportunity = { type: 'growth', title: 'Développer votre gamme de produits', impact: 'medium' };
+  } else {
+    topOpportunity = { type: 'growth', title: 'Lancer de nouveaux produits', impact: 'medium' };
+  }
+
+  // ✅ Action recommandée en premier
+  let recommendedFirstAction = null;
+  if (totalProducts === 0) {
+    recommendedFirstAction = { title: 'Créer votre premier produit', action: 'Ajouter un produit complet.', reason: 'Votre catalogue est vide.', expectedImpact: 'high' };
+  } else if (data.totalOrders === 0) {
+    recommendedFirstAction = { title: 'Générer votre première vente', action: 'Publier vos produits et partager votre boutique.', reason: 'Aucune vente enregistrée.', expectedImpact: 'high' };
+  } else if (data.outOfStock > 0) {
+    recommendedFirstAction = { title: 'Réapprovisionner les ruptures', action: 'Commander de nouvelles unités.', reason: `${data.outOfStock} produit(s) en rupture.`, expectedImpact: 'high' };
+  } else if (data.revenueGrowth < -10) {
+    recommendedFirstAction = { title: 'Relancer vos ventes', action: 'Lancer une promotion ciblée.', reason: `Baisse du chiffre d'affaires de ${Math.abs(data.revenueGrowth).toFixed(1)}%.`, expectedImpact: 'medium' };
+  } else if (data.bestSeller) {
+    recommendedFirstAction = { title: 'Promouvoir votre best-seller', action: `Mettre en avant « ${data.bestSeller.name} ».`, reason: 'Produit le plus vendu.', expectedImpact: 'high' };
+  } else {
+    recommendedFirstAction = { title: 'Développer votre catalogue', action: 'Ajouter de nouveaux produits.', reason: 'Dynamique positive.', expectedImpact: 'medium' };
+  }
+
+  // ✅ Prochaines actions
+  const nextActions = [];
+  if (data.lowStock > 0) nextActions.push({ title: `Anticiper le stock faible (${data.lowStock} produit(s))`, priority: 'medium' });
+  if (data.neverSoldPublished.length > 0) nextActions.push({ title: `Optimiser ${data.neverSoldPublished.length} produit(s) sans vente`, priority: 'medium' });
+  if (data.lowRated.length > 0) nextActions.push({ title: `Améliorer la note de ${data.lowRated.length} produit(s)`, priority: 'medium' });
+  if (data.pendingCount > 0) nextActions.push({ title: `Suivre l'approbation de ${data.pendingCount} produit(s)`, priority: 'low' });
+  if (data.wellRated.length > 0) nextActions.push({ title: 'Mettre en avant vos produits les mieux notés', priority: 'low' });
+  if (nextActions.length === 0 && data.totalRevenue > 0) nextActions.push({ title: 'Élargir votre gamme de produits', priority: 'low' });
+
+  res.status(200).json({
+    success: true,
+    decisionCenter: {
+      generatedAt: new Date().toISOString(),
+      overallStatus,
+      healthScore,
+      topProblem,
+      topOpportunity,
+      recommendedFirstAction,
+      nextActions: nextActions.slice(0, 3),
+      summary: {
+        revenue: Number(data.totalRevenue.toFixed(2)),
+        orders: data.totalOrders,
+        customers: data.totalCustomers,
+        products: totalProducts,
+        rating: seller.rating,
+        totalReviews: seller.totalReviews
+      }
+    }
+  });
+});
 
 module.exports = {
+  // PHASE 13.22
+  getSellerDecisionCenter,
+  getSellerPriorityEngine,
+  getSellerDailyActionPlan,
+  getSellerBusinessHealthScore,
+  getSellerAIAlerts,
+  getSellerDecisionSummary,
   // PHASE 13.21
   getSellerMarketplaceRanking,
   getSellerCompetitiveBenchmark,
@@ -5003,5 +6018,3 @@ module.exports = {
   getSellerCustomerInsights,
   getSellerOrderInsights
 };
-
-

@@ -54,8 +54,14 @@ getSellerGrowthEngine,
   getSellerMarketplaceRanking,
   getSellerCompetitiveBenchmark,
   getSellerMarketShare,
-  getSellerCompetitiveAdvantages,
-  getSellerTopCompetitors
+getSellerCompetitiveAdvantages,
+  getSellerTopCompetitors,
+  getSellerDecisionCenter,
+  getSellerPriorityEngine,
+  getSellerDailyActionPlan,
+  getSellerBusinessHealthScore,
+  getSellerAIAlerts,
+  getSellerDecisionSummary
 } = require('../controllers/sellerController');
 
 
@@ -375,6 +381,66 @@ router.get(
   restrictTo('seller'),
   isApprovedSeller,
   getSellerTopCompetitors
+);
+
+// PHASE 13.22 — Centre de décision IA du vendeur connecté
+// Placée AVANT la route publique /:id pour éviter le shadowing
+router.get(
+  '/decision-center',
+  protect,
+  restrictTo('seller'),
+  isApprovedSeller,
+  getSellerDecisionCenter
+);
+
+// PHASE 13.22 — Moteur de priorités du vendeur connecté
+// Placée AVANT la route publique /:id pour éviter le shadowing
+router.get(
+  '/priority-engine',
+  protect,
+  restrictTo('seller'),
+  isApprovedSeller,
+  getSellerPriorityEngine
+);
+
+// PHASE 13.22 — Plan d'action quotidien du vendeur connecté
+// Placée AVANT la route publique /:id pour éviter le shadowing
+router.get(
+  '/daily-action-plan',
+  protect,
+  restrictTo('seller'),
+  isApprovedSeller,
+  getSellerDailyActionPlan
+);
+
+// PHASE 13.22 — Score de santé business du vendeur connecté
+// Placée AVANT la route publique /:id pour éviter le shadowing
+router.get(
+  '/business-health-score',
+  protect,
+  restrictTo('seller'),
+  isApprovedSeller,
+  getSellerBusinessHealthScore
+);
+
+// PHASE 13.22 — Alertes IA du vendeur connecté
+// Placée AVANT la route publique /:id pour éviter le shadowing
+router.get(
+  '/ai-alerts',
+  protect,
+  restrictTo('seller'),
+  isApprovedSeller,
+  getSellerAIAlerts
+);
+
+// PHASE 13.22 — Résumé décisionnel du vendeur connecté
+// Placée AVANT la route publique /:id pour éviter le shadowing
+router.get(
+  '/decision-summary',
+  protect,
+  restrictTo('seller'),
+  isApprovedSeller,
+  getSellerDecisionSummary
 );
 
 
